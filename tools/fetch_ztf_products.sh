@@ -3,6 +3,7 @@
 #   sbatch tools/fetch_ztf_products.sh                       # refpsfcat, whole footprint
 #   PRODUCTS="refsexcat" sbatch tools/fetch_ztf_products.sh  # another product
 #   SHARD=0/2 sbatch tools/fetch_ztf_products.sh             # one of two hosts
+#   FETCH_ARGS=--reverse sbatch tools/fetch_ztf_products.sh    # from the far end, while a faster host works forward
 #SBATCH -p shared
 #SBATCH -c 1
 #SBATCH --mem=2G

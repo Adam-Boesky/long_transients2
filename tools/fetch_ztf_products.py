@@ -8,6 +8,7 @@ rerun resumes wherever it stopped.
 
     python tools/fetch_ztf_products.py --products refpsfcat                 # everything, one stream
     python tools/fetch_ztf_products.py --products refpsfcat --shard 1/2     # second of two hosts
+    python tools/fetch_ztf_products.py --products refpsfcat --reverse       # a slower host working from the far end
     python tools/fetch_ztf_products.py --products refpsfcat --status        # count done / missing
 """
 import argparse
@@ -58,9 +59,11 @@ def status(manifest: pd.DataFrame, data_dir: str, products) -> None:
         print(f'{product}: {done}/{len(manifest)} on disk, {n404} missing on IRSA, {len(manifest) - done - n404} to go')
 
 
-def run(manifest: pd.DataFrame, data_dir: str, products, shard: str) -> None:
+def run(manifest: pd.DataFrame, data_dir: str, products, shard: str, reverse: bool = False) -> None:
     i, n = (int(v) for v in shard.split('/'))
     manifest = manifest.iloc[i::n]
+    if reverse:
+        manifest = manifest.iloc[::-1]
     os.makedirs(os.path.join(data_dir, 'fetch_logs'), exist_ok=True)
     session = requests.Session()
     counts = {'ok': 0, 'cached': 0, '404': 0, 'fail': 0}
@@ -90,6 +93,7 @@ def main():
     ap.add_argument('--products', nargs='+', default=['refpsfcat'])
     ap.add_argument('--shard', default='0/1', help='i/n: this process takes every n-th file starting at i')
     ap.add_argument('--fields', nargs='*', type=int, help='restrict to these field IDs')
+    ap.add_argument('--reverse', action='store_true', help='walk the manifest from the last field backwards')
     ap.add_argument('--limit', type=int, help='stop after this many manifest rows (smoke tests)')
     ap.add_argument('--data-dir', default=os.path.join(get_data_path(), 'ztf_data'))
     ap.add_argument('--status', action='store_true', help='report progress and exit')
@@ -100,7 +104,7 @@ def main():
     if args.status:
         status(manifest, args.data_dir, args.products)
     else:
-        run(manifest, args.data_dir, args.products, args.shard)
+        run(manifest, args.data_dir, args.products, args.shard, args.reverse)
 
 
 if __name__ == '__main__':
