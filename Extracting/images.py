@@ -90,10 +90,18 @@ def measure_fwhm(data: np.ndarray, saturation: Optional[float] = None, n_stars: 
     ok = (src['flag'] == 0) & (src['b'] / src['a'] > 0.8) & (src['peak'] > 50.0 * bkg.globalrms)
     if saturation is not None:
         ok &= src['peak'] < 0.3 * saturation
+    fit_shape = int(2 * round(1.5 * fwhm_guess) + 1)
+    half = fit_shape // 2
+    xi, yi = src['x'].round().astype(int), src['y'].round().astype(int)
+    ny_, nx_ = bad.shape
+    clean = np.array([
+        half <= x < nx_ - half and half <= y < ny_ - half and not bad[y - half:y + half + 1, x - half:x + half + 1].any()
+        for x, y in zip(xi, yi)
+    ])
+    ok &= clean
     src = src[ok][np.argsort(-src['peak'][ok])][:n_stars]
     if len(src) < 20:
         raise ValueError(f'only {len(src)} usable stars for the FWHM estimate')
-    fit_shape = int(2 * round(1.5 * fwhm_guess) + 1)
     fwhm = fit_fwhm(img, xypos=np.c_[src['x'], src['y']], fwhm=fwhm_guess, fit_shape=fit_shape, mask=bad)
     return float(np.nanmedian(fwhm))
 
