@@ -92,8 +92,8 @@ def on_cluster() -> bool:
 def get_data_path() -> str:
     """Get the path to the data directory."""
     if on_cluster():
-        return '/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients'
-    return '/Users/adamboesky/Research/long_transients/Data'
+        return '/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients2'
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'Data')  # <repo>/Data
 
 
 def true_nearby(row: int, column: int, radius: int, mask: np.ndarray) -> bool:
