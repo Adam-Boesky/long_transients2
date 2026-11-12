@@ -11,7 +11,7 @@ import numpy as np
 import sep
 from astropy.table import Table
 
-from .images import Image
+from .images import Image, ZTF_GAIN_PER_FRAME
 from .utils import img_flux_to_ab_mag
 
 sep.set_extract_pixstack(10_000_000)
@@ -40,12 +40,19 @@ def background(image: Image, box_arcsec: float = BKG_BOX_ARCSEC, filter_size: in
     return sep.Background(filled, mask=bad, bw=box, bh=box, fw=filter_size, fh=filter_size)
 
 
-def noise(image: Image, bkg: sep.Background) -> Tuple[np.ndarray | float, Optional[float]]:
-    """(err, gain) for sep: a per-pixel rms map and no gain where the survey gives a variance map."""
-    if image.variance is not None:
+def noise(image: Image, bkg: sep.Background, per_pixel: bool = True) -> Tuple[np.ndarray | float, Optional[float]]:
+    """(err, gain) for sep.
+
+    With `per_pixel` and a survey variance map: the per-pixel rms and no gain. Otherwise the global
+    background rms plus the gain for a Poisson term, which is what the original pipeline used.
+    """
+    if per_pixel and image.variance is not None:
         err = np.sqrt(np.where(np.isnan(image.variance), np.nanmedian(image.variance), image.variance)).astype(np.float32)
         return err, None
-    return float(bkg.globalrms), image.gain
+    gain = image.gain
+    if gain is None and image.survey == 'ztf':
+        gain = ZTF_GAIN_PER_FRAME * float(image.header['NFRAMES'])
+    return float(bkg.globalrms), gain
 
 
 def detect(
@@ -55,8 +62,13 @@ def detect(
         minarea: int = MINAREA_PX,
         deblend_cont: float = DEBLEND_CONT,
         deblend_nthresh: int = DEBLEND_NTHRESH,
+        per_pixel_threshold: bool = False,
     ) -> Tuple[Table, np.ndarray, np.ndarray, sep.Background]:
     """sep detections on the background-subtracted image.
+
+    The threshold is `thresh` times the global background rms by default, as in the original
+    pipeline; `per_pixel_threshold` uses the variance map instead (SExtractor weight-map style),
+    which re-segments blended sources because the Poisson term raises the threshold on galaxies.
 
     Returns (sources, segmap, image_sub, bkg). `sources` has sep's columns, the flag renamed to
     `sepExtractionFlag`, a 1-based `segid` matching `segmap`, and `ra`, `dec`.
@@ -66,7 +78,7 @@ def detect(
     filled, bad = _filled(image)
     image_sub = filled - bkg.back()
     image_sub[bad] = np.nan
-    err, gain = noise(image, bkg)
+    err, gain = noise(image, bkg, per_pixel=per_pixel_threshold)
     raw, segmap = sep.extract(
         np.where(bad, 0.0, image_sub).astype(np.float32), thresh=thresh, err=err, mask=bad, minarea=minarea,
         deblend_cont=deblend_cont, deblend_nthresh=deblend_nthresh, gain=gain, segmentation_map=True,

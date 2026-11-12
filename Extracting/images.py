@@ -129,11 +129,29 @@ def load_ps1_skycell(stack_path: str, mask_path: Optional[str] = None, wt_path: 
     )
 
 
-def load_ztf_refimg(path: str, band: Optional[str] = None) -> Image:
-    """A ZTF deep reference image, with the conventions of the original extraction (`Source_Extractor`)."""
+def load_ztf_refimg(path: str, unc_path: Optional[str] = None, cov_path: Optional[str] = None,
+                    band: Optional[str] = None, min_coverage: float = 0.5) -> Image:
+    """A ZTF deep reference image, with the conventions of the original extraction (`Source_Extractor`).
+
+    With `unc_path` (IRSA's `refunc`, 1-sigma per pixel in DN) the variance map is its square and
+    the gain is not needed. With `cov_path` (`refcov`, input frames per pixel) pixels below
+    `min_coverage` times the median coverage are marked bad; those thin edges are noisy.
+    """
     with fits.open(path) as hdul:
         header = hdul[0].header.copy()
         data = np.array(hdul[0].data, dtype=np.float32)
+    variance = None
+    if unc_path is not None:
+        with fits.open(unc_path) as hdul:
+            unc = np.array(hdul[0].data, dtype=np.float32)
+        variance = unc ** 2
+        data[np.isnan(unc) | ~(unc > 0)] = np.nan
+    if cov_path is not None:
+        with fits.open(cov_path) as hdul:
+            cov = np.array(hdul[0].data, dtype=np.float32)
+        data[~(cov >= min_coverage * np.nanmedian(cov))] = np.nan
+    if variance is not None:
+        variance[np.isnan(data)] = np.nan
     if 'RADECSYS' in header:
         if 'RADESYS' not in header:
             header['RADESYS'] = header['RADECSYS']
@@ -146,7 +164,7 @@ def load_ztf_refimg(path: str, band: Optional[str] = None) -> Image:
         survey='ztf', band=band, name=os.path.basename(path).replace('_refimg.fits', ''),
         data=data, wcs=wcs, zero_point=float(header['MAGZP']), fwhm_px=fwhm,
         pixel_scale=float(np.mean(proj_plane_pixel_scales(wcs)) * 3600.0),
-        variance=None, gain=ZTF_GAIN_PER_FRAME * float(header['NFRAMES']),
+        variance=variance, gain=None if variance is not None else ZTF_GAIN_PER_FRAME * float(header['NFRAMES']),
         saturation=float(header['SATURATE']) if 'SATURATE' in header else None,
         mag_limit=float(header['MAGLIM']) if 'MAGLIM' in header else None, header=header,
     )

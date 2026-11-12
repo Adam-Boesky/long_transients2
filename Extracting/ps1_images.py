@@ -109,7 +109,8 @@ def skycells_covering(
     return tab['projcell', 'subcell', 'band', 'filename']
 
 
-def download_file(url: str, dest: str, n_attempts: int = 5, overwrite: bool = False) -> Optional[str]:
+def download_file(url: str, dest: str, n_attempts: int = 5, overwrite: bool = False,
+                  auth: Optional[Tuple[str, str]] = None) -> Optional[str]:
     """Stream `url` to `dest` with backoff; None on 404 or after `n_attempts`. FITS files are validated."""
     is_fits = dest.endswith('.fits')
     if os.path.exists(dest) and not overwrite:
@@ -120,7 +121,7 @@ def download_file(url: str, dest: str, n_attempts: int = 5, overwrite: bool = Fa
     part = dest + '.part'
     for attempt in range(n_attempts):
         try:
-            resp = requests.get(url, stream=True, timeout=REQUEST_TIMEOUT)
+            resp = requests.get(url, stream=True, timeout=REQUEST_TIMEOUT, auth=auth)
             if resp.status_code == 404:
                 print(f'DOWNLOAD_FAIL HTTP 404: {url}')
                 return None
