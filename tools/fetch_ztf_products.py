@@ -120,7 +120,7 @@ def status(manifest: pd.DataFrame, data_dir: str, products) -> None:
 
 
 def fetch_rows(rows: pd.DataFrame, data_dir: str, product: str, session: requests.Session, counts: dict,
-               t0: float, missing: set, miss, heartbeat: str = None) -> None:
+               t0: float, missing: set, miss, heartbeats=()) -> None:
     for r in rows.itertuples():
         dest = refimg_path(field_dir(data_dir, r.field), r.field, r.ccdid, r.qid, r.band, product)
         name = os.path.basename(dest)
@@ -129,8 +129,8 @@ def fetch_rows(rows: pd.DataFrame, data_dir: str, product: str, session: request
             continue
         result = fetch_product(session, refimg_url(r.field, r.ccdid, r.qid, r.band, product), dest)
         counts[result] += 1
-        if heartbeat:
-            _heartbeat(heartbeat)
+        for lease in heartbeats:
+            _heartbeat(lease)
         if result == '404':
             miss.write(name + '\n')
             miss.flush()
@@ -166,7 +166,7 @@ def run(manifest: pd.DataFrame, data_dir: str, products, shard: str, reverse: bo
         missing = read_missing(data_dir, product)
         with open(missing_log(data_dir, product), 'a') as miss:
             if not claim:
-                fetch_rows(manifest, data_dir, product, session, counts, t0, missing, miss, heartbeat=ip_lease)
+                fetch_rows(manifest, data_dir, product, session, counts, t0, missing, miss, heartbeats=[p for p in (ip_lease,) if p])
                 continue
             claims = os.path.join(logs, f'claims_{product}')
             os.makedirs(claims, exist_ok=True)
@@ -179,9 +179,7 @@ def run(manifest: pd.DataFrame, data_dir: str, products, shard: str, reverse: bo
                 if not _lease(lease):
                     continue
                 print(f'FETCH_CLAIM field {field} ({len(rows)} files) by {WORKER}', flush=True)
-                fetch_rows(rows, data_dir, product, session, counts, t0, missing, miss, heartbeat=lease)
-                if ip_lease:
-                    _heartbeat(ip_lease)
+                fetch_rows(rows, data_dir, product, session, counts, t0, missing, miss, heartbeats=[p for p in (lease, ip_lease) if p])
                 _release(lease)
     if ip_lease:
         _release(ip_lease)
