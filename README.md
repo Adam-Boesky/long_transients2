@@ -1,5 +1,51 @@
 # long_transients
 
+## The filtering pipeline at a glance
+
+```
+ZTF deep-reference DAOPhot catalogs (g, r, i)        PS1 DR2 stack catalog (grizy, one row per object)
+   + our Kron photometry on the reference images        + MAST's bad-skycell list
+            │                                                   │
+            └──────────── 1″ cross-match ───────────────────────┘
+                                 │
+                   one row per object: ZTF object (+ PS1 match) or PS1-only object
+                                 │
+                 ┌───────────────▼────────────────┐
+                 │  SHARED STAGE (every object)    │
+                 │  per band, per survey:          │
+                 │   characterize  → D / L / U     │  measurement at S/N ≥ 5 / below / none
+                 │   quality       → X             │  coverage, masks, flags, bad stacks, bad skycells
+                 │   compare?      → kind          │  two-sided · vs PS1 limit · vs ZTF limit · nothing
+                 └───────────────┬────────────────┘
+                                 │  ≥ 2 comparable bands of one kind?
+            ┌────────────────────┼────────────────────┐───────────────► not comparable (exit, with reason)
+            ▼                    ▼                    ▼
+         in_both              in_ztf              in_pstarr
+      (two-sided)       (ZTF vs PS1 limit)    (PS1 vs ZTF limit)
+            │                    │                    │
+            ├─ confident: real object? (star mask, sharpness; isolation & Kron containment for one-sided; nStack ≥ 2)
+            ├─ population: not Galactic (Gaia proper motion, parallax)
+            │
+            ▼
+   ┌────────────────────────────────────────────────────────────────┐
+   │ CALIBRATE on what is left                                      │
+   │  recovery limits: 90% recovery of the other survey's objects   │  per quadrant, PSF & Kron
+   │  envelope: KDE of ZTF − PS1 vs mag from the two-sided bands    │  clipped
+   └────────────────────────────┬───────────────────────────────────┘
+                                ▼
+            σ per band  (limit bands clipped to the direction the limit supports)
+                                │
+            ├─ interesting: |σ| > 3 in ≥ 2 bands, ≥ 2 of the same sign
+            ├─ best: every measured side at S/N ≥ 10, rule re-checked
+                                ▼
+                 candidates  (in_both / in_ztf / in_pstarr)
+```
+
+Five ideas, top to bottom: **match** → **characterize & sort** (the shared stage: what each band is, whether it's
+trustworthy, what it can compare; the catalog is just the kind of comparison) → **clean** the catalogs (real, not
+Galactic) → **calibrate** on the survivors (limits, envelope) → **select** (σ, the ≥ 2-band rules, S/N ≥ 10).
+Code: `Source_Analysis/filter_field.py`; walkthrough with field 860: `Notebooks/pipeline_review_860.ipynb`.
+
 ## Workflow Overview
 ### 1. Extract
 This step extracts sources from ZTF deep stack reference images and the Pan-STARRS source catalog, and stores them.
