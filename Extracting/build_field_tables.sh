@@ -21,10 +21,4 @@ if [ -n "${SLURM_ARRAY_TASK_ID}" ] && [ -n "${FIELDS}" ]; then
     FIELD=$(echo ${FIELDS} | tr ' ' '\n' | sed -n "$((SLURM_ARRAY_TASK_ID + 1))p")
 fi
 FIELD=${FIELD:?set FIELD or FIELDS}
-# the builder reads the flat layout: link the bulk download's per-field products and the old data dir's images
-L=/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients2/ztf_data
-F=$(printf %06d ${FIELD})
-for p in $L/field${F}/ztf_${F}_*.fits /n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/ztf_data/ztf_${F}_*_refimg.fits; do
-    [ -e "$p" ] && ln -sfn "$p" "$L/$(basename $p)"
-done
 python3 -u -m Extracting.field_tables ${FIELD} --n-jobs ${SLURM_CPUS_PER_TASK:-1} ${REQUIRE:+--require ${REQUIRE}}

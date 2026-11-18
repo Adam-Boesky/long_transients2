@@ -28,7 +28,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from Extracting.utils import get_data_path  # noqa: E402
-from Extracting.ztf_images import fetch_product, field_dir, refimg_path, refimg_url  # noqa: E402
+from Extracting.ztf_images import fetch_product, product_dir, refimg_path, refimg_url  # noqa: E402
 
 MANIFEST = Path(__file__).resolve().parents[1] / 'Extracting' / 'footprint' / 'irsa_deep_quadrants.csv'
 STALE_MINUTES = 20.0          # a claim or IP lease not touched for this long belongs to a dead worker
@@ -104,7 +104,7 @@ def public_ip() -> str:
 def status(manifest: pd.DataFrame, data_dir: str, products) -> None:
     for product in products:
         missing = read_missing(data_dir, product)
-        done = sum(os.path.exists(refimg_path(field_dir(data_dir, r.field), r.field, r.ccdid, r.qid, r.band, product))
+        done = sum(os.path.exists(refimg_path(data_dir, r.field, r.ccdid, r.qid, r.band, product))
                    for r in manifest.itertuples())
         n404 = sum(os.path.basename(refimg_path('', r.field, r.ccdid, r.qid, r.band, product)) in missing
                    for r in manifest.itertuples())
@@ -122,7 +122,7 @@ def status(manifest: pd.DataFrame, data_dir: str, products) -> None:
 def fetch_rows(rows: pd.DataFrame, data_dir: str, product: str, session: requests.Session, counts: dict,
                t0: float, missing: set, miss, heartbeats=()) -> None:
     for r in rows.itertuples():
-        dest = refimg_path(field_dir(data_dir, r.field), r.field, r.ccdid, r.qid, r.band, product)
+        dest = refimg_path(data_dir, r.field, r.ccdid, r.qid, r.band, product)
         name = os.path.basename(dest)
         if name in missing:
             counts['404'] += 1
@@ -171,7 +171,7 @@ def run(manifest: pd.DataFrame, data_dir: str, products, shard: str, reverse: bo
             claims = os.path.join(logs, f'claims_{product}')
             os.makedirs(claims, exist_ok=True)
             for field, rows in manifest.groupby('field', sort=False):
-                if all(os.path.exists(refimg_path(field_dir(data_dir, r.field), r.field, r.ccdid, r.qid, r.band, product))
+                if all(os.path.exists(refimg_path(data_dir, r.field, r.ccdid, r.qid, r.band, product))
                        or os.path.basename(refimg_path('', r.field, r.ccdid, r.qid, r.band, product)) in missing
                        for r in rows.itertuples()):
                     continue

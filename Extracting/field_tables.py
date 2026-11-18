@@ -25,7 +25,7 @@ from scipy.spatial import cKDTree
 from . import kron, ps1_stack
 from .images import load_ztf_refimg
 from .utils import get_data_path
-from .ztf_images import refimg_path
+from .ztf_images import product_dir, refimg_path
 
 BANDS = ('g', 'r', 'i')
 MERGE_ORDER = ('i', 'r', 'g')      # seed band first
@@ -61,7 +61,7 @@ def field_quadrants(field: int, data_dir: Optional[str] = None, band: str = 'r')
     footprint the PS1 step uses)."""
     ztf_dir = os.path.join(data_dir or get_data_path(), 'ztf_data')
     found = []
-    for path in sorted(glob.glob(os.path.join(ztf_dir, f'ztf_{int(field):06d}_z{band}_c??_q?_refimg.fits'))):
+    for path in sorted(glob.glob(os.path.join(product_dir(ztf_dir, field), f'ztf_{int(field):06d}_z{band}_c??_q?_refimg.fits'))):
         name = os.path.basename(path)
         ccd, qid = int(name.split('_c')[1][:2]), int(name.split('_q')[1][0])
         if has_quadrant_band(field, ccd, qid, band, data_dir):

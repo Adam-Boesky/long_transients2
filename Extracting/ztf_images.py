@@ -36,13 +36,14 @@ def refimg_url(field: int, ccd: int, qid: int, band: str, product: str = 'refimg
     return f'{IBE_DEEP}/{pf[:3]}/field{pf}/z{band}/ccd{int(ccd):02d}/q{int(qid)}/{refimg_name(field, ccd, qid, band)}_{PRODUCT_SUFFIX[product]}'
 
 
-def refimg_path(data_dir: str, field: int, ccd: int, qid: int, band: str, product: str = 'refimg') -> str:
-    return os.path.join(data_dir, f'{refimg_name(field, ccd, qid, band)}_{PRODUCT_SUFFIX[product]}')
+def product_dir(ztf_dir: str, field: int) -> str:
+    """Products are stored one directory per field: `<ztf_dir>/field000643/`."""
+    return os.path.join(ztf_dir, f'field{int(field):06d}')
 
 
-def field_dir(data_dir: str, field: int) -> str:
-    """Bulk downloads are grouped one directory per field: `<data_dir>/field000643/`."""
-    return os.path.join(data_dir, f'field{int(field):06d}')
+def refimg_path(ztf_dir: str, field: int, ccd: int, qid: int, band: str, product: str = 'refimg') -> str:
+    """`<ztf_dir>/field000643/ztf_000643_zr_c01_q1_refimg.fits`."""
+    return os.path.join(product_dir(ztf_dir, field), f'{refimg_name(field, ccd, qid, band)}_{PRODUCT_SUFFIX[product]}')
 
 
 def fits_table_valid(path: str) -> bool:
