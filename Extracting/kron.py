@@ -32,16 +32,46 @@ Differences from psphot that remain: neighbours are masked by segment rather tha
 models, and the surface-brightness window, faint cap and floor are evaluated in this image's own units.
 """
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import sep
 from scipy.ndimage import gaussian_filter
 from skimage.segmentation import watershed
 
-from .extract import background, noise
-from .images import Image
+from .images import Image, ZTF_GAIN_PER_FRAME
 from .utils import img_flux_to_ab_mag
+
+BKG_BOX_ARCSEC = 64.0          # sep background mesh (Source_Extractor used bw=bh=64 px on ZTF)
+
+
+def _filled(image: Image) -> Tuple[np.ndarray, np.ndarray]:
+    """Image with NaNs zeroed, and the boolean bad mask, as sep wants them."""
+    bad = image.bad
+    return np.where(bad, 0.0, image.data).astype(np.float32), bad
+
+
+def background(image: Image, box_arcsec: float = BKG_BOX_ARCSEC, filter_size: int = 3) -> sep.Background:
+    filled, bad = _filled(image)
+    box = int(round(box_arcsec / image.pixel_scale))
+    return sep.Background(filled, mask=bad, bw=box, bh=box, fw=filter_size, fh=filter_size)
+
+
+def noise(image: Image, bkg: sep.Background, per_pixel: bool = True) -> Tuple[np.ndarray | float, Optional[float]]:
+    """(err, gain) for sep.
+
+    With `per_pixel` and a survey variance map: the per-pixel rms and no gain. Otherwise the global
+    background rms plus the gain for a Poisson term, which is what the original pipeline used.
+    """
+    if per_pixel and image.variance is not None:
+        err = np.sqrt(np.where(np.isnan(image.variance), np.nanmedian(image.variance), image.variance)).astype(np.float32)
+        return err, None
+    gain = image.gain
+    if gain is None and image.survey == 'ztf':
+        gain = ZTF_GAIN_PER_FRAME * float(image.header['NFRAMES'])
+    return float(bkg.globalrms), gain
+
 
 # Recipe values. "psphot.config" means the PS1 value in IPP:ippconfig/recipes/psphot.config; "default" means the
 # fallback compiled into psphotKronIterate.c when the recipe does not set it.

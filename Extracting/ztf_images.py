@@ -14,8 +14,7 @@ from typing import Dict, Iterable, Optional, Tuple
 import requests
 from astropy.io import fits
 
-from .ps1_images import download_file
-from .utils import get_credentials
+from .utils import fitscheck_valid, get_credentials
 
 IBE_DEEP = 'https://irsa.ipac.caltech.edu/ibe/data/ztf/products/deep'
 PRODUCT_SUFFIX = {
@@ -23,6 +22,7 @@ PRODUCT_SUFFIX = {
     'refpsfcat': 'refpsfcat.fits', 'refsexcat': 'refsexcat.fits', 'refimlog': 'refimlog.txt',
 }
 DEFAULT_PRODUCTS = ('refimg', 'refunc', 'refcov')
+REQUEST_TIMEOUT = (10, 120)   # (connect, read) seconds
 THROTTLE_CODES = (429, 503)   # IRSA answers these when a client asks faster than ~1 file per 2 s
 
 
@@ -91,6 +91,43 @@ def fetch_product(session: requests.Session, url: str, dest: str, max_attempts: 
             os.remove(part)
         time.sleep(min(wait * 1.5 ** attempt, 60.0) * random.uniform(0.8, 1.2))
     return 'fail'
+
+
+def download_file(url: str, dest: str, n_attempts: int = 5, overwrite: bool = False,
+                  auth: Optional[Tuple[str, str]] = None) -> Optional[str]:
+    """Stream `url` to `dest` with backoff; None on 404 or after `n_attempts`. FITS files are validated."""
+    is_fits = dest.endswith('.fits')
+    if os.path.exists(dest) and not overwrite:
+        if not is_fits or fitscheck_valid(dest):
+            return dest
+        os.remove(dest)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    part = dest + '.part'
+    for attempt in range(n_attempts):
+        try:
+            resp = requests.get(url, stream=True, timeout=REQUEST_TIMEOUT, auth=auth)
+            if resp.status_code == 404:
+                print(f'DOWNLOAD_FAIL HTTP 404: {url}')
+                return None
+            if resp.status_code != 200:
+                print(f'DOWNLOAD_RETRY HTTP {resp.status_code} (attempt {attempt + 1}/{n_attempts}): {url}')
+            else:
+                with open(part, 'wb') as f:
+                    for chunk in resp.iter_content(chunk_size=1 << 20):
+                        if chunk:
+                            f.write(chunk)
+                if not is_fits or fitscheck_valid(part):
+                    os.replace(part, dest)
+                    return dest
+                print(f'DOWNLOAD_RETRY invalid file (attempt {attempt + 1}/{n_attempts}): {url}')
+        except requests.exceptions.RequestException as e:
+            print(f'DOWNLOAD_RETRY {type(e).__name__} (attempt {attempt + 1}/{n_attempts}): {url}')
+        if os.path.exists(part):
+            os.remove(part)
+        if attempt < n_attempts - 1:
+            time.sleep(min(15 * 2 ** attempt, 300) * random.uniform(0.8, 1.2))
+    print(f'DOWNLOAD_FAIL gave up after {n_attempts} attempts: {url}')
+    return None
 
 
 def irsa_auth() -> Tuple[str, str]:
