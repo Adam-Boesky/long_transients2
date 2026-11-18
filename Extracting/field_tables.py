@@ -100,18 +100,22 @@ def mutual_nearest(ra1, dec1, ra2, dec2, radius_arcsec: float = MATCH_ARCSEC) ->
 # ----------------------------------------------------------------------------------------------- per band, per quadrant
 
 def band_catalog(field: int, ccd: int, qid: int, band: str, data_dir: Optional[str] = None, with_kron: bool = True,
-                 with_sexcat: bool = True, overwrite: bool = False) -> pd.DataFrame:
+                 with_sexcat: bool = True, overwrite: bool = False, require: Sequence[str] = ()) -> pd.DataFrame:
     """One quadrant's DAOPhot catalog in one band, with our Kron photometry and SExtractor's MAG_AUTO attached;
-    cached under the field directory."""
+    cached under the field directory. `require` names optional products (refunc, refcov, refsexcat) that must exist."""
     data_dir = data_dir or get_data_path()
     out_dir = os.path.join(field_dir(field, data_dir), 'quadrants')
     path = os.path.join(out_dir, f'ztf_{quadrant_name(ccd, qid)}_{band}.parquet')
     if os.path.exists(path) and not overwrite:
         return pd.read_parquet(path)
     ztf_dir = os.path.join(data_dir, 'ztf_data')
+    for product in require:
+        if not os.path.exists(refimg_path(ztf_dir, field, ccd, qid, band, product)):
+            raise FileNotFoundError(f'required product missing: {refimg_path(ztf_dir, field, ccd, qid, band, product)}')
     with fits.open(refimg_path(ztf_dir, field, ccd, qid, band, 'refpsfcat')) as hdul:
         raw = Table(hdul[1].data)
         magzp = float(hdul[0].header['MAGZP'])
+        hdul_nmatches = hdul[0].header.get('NMATCHES')
     cat = pd.DataFrame({new: np.asarray(raw[old], float) for old, new in PSF_COLS.items()})
     cat['flags'] = cat['flags'].astype(int)
     cat['mag'] += magzp                                   # refpsfcat magnitudes are instrumental; MAGZP calibrates them (Supplement section 7.3)
@@ -120,6 +124,9 @@ def band_catalog(field: int, ccd: int, qid: int, band: str, data_dir: Optional[s
     cat['edge_px'] = np.minimum.reduce([cat.x.values, cat.y.values, REF_SIZE_PX - cat.x.values, REF_SIZE_PX - cat.y.values])
     im = load_ztf_refimg(refimg_path(ztf_dir, field, ccd, qid, band), unc_path=_optional(refimg_path(ztf_dir, field, ccd, qid, band, 'refunc')),
                          cov_path=_optional(refimg_path(ztf_dir, field, ccd, qid, band, 'refcov')))
+    if abs(im.zero_point - magzp) > 1e-6 or im.header.get('NMATCHES') != hdul_nmatches:   # the deep references are rebuilt on a rolling basis
+        raise RuntimeError(f'{refimg_path(ztf_dir, field, ccd, qid, band, "refpsfcat")}: catalog and image come from different reference builds '
+                           f'(MAGZP {magzp} vs {im.zero_point}, NMATCHES {hdul_nmatches} vs {im.header.get("NMATCHES")})')
     xi, yi = np.clip(np.round(cat.x.values - 1).astype(int), 0, im.shape[1] - 1), np.clip(np.round(cat.y.values - 1).astype(int), 0, im.shape[0] - 1)
     cat['nan_dist_px'] = distance_transform_edt(~im.bad)[yi, xi]              # distance to the nearest masked pixel
     if with_sexcat and _optional(refimg_path(ztf_dir, field, ccd, qid, band, 'refsexcat')):
@@ -377,12 +384,13 @@ def match_ps1(obj: pd.DataFrame, ps1: pd.DataFrame, radius_arcsec: float = MATCH
 
 # ----------------------------------------------------------------------------------------------- driver
 
-def build_field(field: int, quadrants: Sequence[Tuple[int, int]], data_dir: Optional[str] = None, overwrite: bool = False, n_jobs: int = 1):
+def build_field(field: int, quadrants: Sequence[Tuple[int, int]], data_dir: Optional[str] = None, overwrite: bool = False, n_jobs: int = 1,
+                require: Sequence[str] = ()):
     """Steps 1 to 4 for one field. Writes ztf_<b>.parquet, ztf_objects.parquet and ps1.parquet under the field directory
     and returns (bands, objects, ps1)."""
     out = field_dir(field, data_dir)
     os.makedirs(out, exist_ok=True)
-    bands = {b: field_band(field, quadrants, b, data_dir, n_jobs=n_jobs, overwrite=overwrite) for b in BANDS}
+    bands = {b: field_band(field, quadrants, b, data_dir, n_jobs=n_jobs, overwrite=overwrite, require=require) for b in BANDS}
     for b, cat in bands.items():
         cat.to_parquet(os.path.join(out, f'ztf_{b}.parquet'))
     obj = merge_bands(bands)
@@ -400,8 +408,9 @@ if __name__ == '__main__':                                 # python -m Extractin
     ap.add_argument('--n-jobs', type=int, default=1)
     ap.add_argument('--overwrite', action='store_true')
     ap.add_argument('--data-dir', default=None)
+    ap.add_argument('--require', nargs='*', default=[], help='optional products that must be present, e.g. refunc')
     a = ap.parse_args()
     quads = field_quadrants(a.field, a.data_dir)
     print(f'field {a.field}: {len(quads)} quadrants', flush=True)
-    bands, obj, ps1 = build_field(a.field, quads, a.data_dir, overwrite=a.overwrite, n_jobs=a.n_jobs)
+    bands, obj, ps1 = build_field(a.field, quads, a.data_dir, overwrite=a.overwrite, n_jobs=a.n_jobs, require=a.require)
     print(f'done: ' + ', '.join(f'{b} {len(c):,}' for b, c in bands.items()) + f'; objects {len(obj):,}; PS1 {len(ps1):,}; matched {int(obj.matched.sum()):,}', flush=True)
