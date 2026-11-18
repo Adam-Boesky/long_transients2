@@ -49,9 +49,10 @@ unmatched PS1 object), and every band of it is judged in the same order, each st
      survey's limit (PS1's forced photometry; a ZTF detection under SNR_MIN), else the limit.
   4. undesired population: no Gaia proper motion or parallax at 5 sigma;
   5. interesting: |sigma| > SIGMA_BOUNDARY in at least two bands, at least two of them of the same sign;
-  6. best (`snr_keep`, optional, last): a band is kept only if each side measured in its comparison (not a limit)
-     reaches that S/N, and the |sigma| requirement is re-checked on the bands that remain. The envelope is built
-     before this step, from the S/N >= SNR_MIN population.
+  6. best (`snr_keep`, optional and off by default, last): a band is kept only if each side measured in its
+     comparison (not a limit) reaches that S/N, and the |sigma| requirement is re-checked on the bands that remain.
+     The envelope is built before this step, from the S/N >= SNR_MIN population. Off, every candidate carries its
+     per-band S/N (`{b}_ztf_snr`, `{b}_ps1_snr`) and the website applies the threshold.
 
 A dropped band stays dropped, and an object leaves as soon as fewer than two bands remain.
 
@@ -132,7 +133,7 @@ class Cuts:
     ps1_min_nframes: Optional[int] = 4        # a PS1 band from a stack of fewer input frames is untrustworthy
     isolation_arcsec: Optional[float] = 3.0   # drop in_ztf / in_pstarr objects with any other object this close
     neighbour_kron: bool = True               # ... or inside a brighter object's Kron aperture (either survey)
-    snr_keep: Optional[float] = 10.0          # last step: a candidate's band needs this S/N on every side it measures
+    snr_keep: Optional[float] = None          # optional last step: a candidate's band needs this S/N on every side it measures (off: the site filters on S/N)
     envelope_clip_mad: Optional[float] = 5.0  # envelope sample clipped at this many MAD-sigma per ENVELOPE_CLIP_BIN
 
     def replace(self, **changes) -> 'Cuts':
@@ -1265,3 +1266,14 @@ def _box_width_for_text(text: str, fontsize: float = 12.5, inches_per_unit: floa
             max_w_pts = max(max_w_pts, bb.width)
     text_units = (max_w_pts / 72.0) / inches_per_unit * 1.13
     return max(3.0, text_units + padding)
+
+
+if __name__ == '__main__':                                 # python -m Source_Analysis.filter_field 860 [--data-dir Data]
+    import argparse
+    ap = argparse.ArgumentParser(description='Filter one field; writes objects, candidates, stats and envelopes under <data>/fields/<field>/filter/.')
+    ap.add_argument('field', type=int)
+    ap.add_argument('--data-dir', default=None)
+    ap.add_argument('--snr-keep', type=float, default=None, help='also apply the measured-sides S/N step at this value')
+    a = ap.parse_args()
+    _src, _env, _cands, _wfs = filter_field(a.field, a.data_dir, Cuts(snr_keep=a.snr_keep), save=True, verbose=True)
+    print('candidates:', {k: len(v) for k, v in _cands.items()}, flush=True)
