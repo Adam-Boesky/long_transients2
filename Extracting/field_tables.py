@@ -1,8 +1,8 @@
 """Per-field source tables from the per-quadrant ZTF reference products and the PS1 catalog.
 
 Order, per field:
-  1. per band: each quadrant's DAOPhot catalog (`refpsfcat`) with our Kron photometry and SExtractor's MAG_AUTO
-     attached, concatenated over the quadrants, then deduplicated in the overlap strips (the 3200 px reference
+  1. per band: each quadrant's DAOPhot catalog (`refpsfcat`) with our Kron photometry attached, concatenated over
+     the quadrants, then deduplicated in the overlap strips (the 3200 px reference
      images are larger than the 3072 x 3080 px quadrants, so neighbouring images overlap by ~1-2');
   2. the bands merged into objects by mutual nearest neighbour at MATCH_ARCSEC, seeded on i;
   3. the PS1 stack catalog (`ps1_stack`: our mirror of MAST's stack table, cleaned to one row per object) for the
@@ -33,7 +33,7 @@ MATCH_ARCSEC = 1.0
 REF_SIZE_PX = 3200                 # reference-image side (Explanatory Supplement section 7.2)
 PSF_COLS = {'ra': 'ra', 'dec': 'dec', 'xpos': 'x', 'ypos': 'y', 'mag': 'mag', 'sigmag': 'magerr', 'snr': 'snr', 'chi': 'chi', 'sharp': 'sharp', 'flags': 'flags'}
 KRON_COLS = {'mag': 'zkron', 'magerr': 'zkron_err', 'r1': 'zkron_r1', 'r_ap': 'zkron_rap', 'sky_radius': 'zkron_sky', 'flag': 'zkron_flag', 'masked_frac': 'zkron_masked'}
-OBJECT_COLS = ('mag', 'magerr', 'snr', 'chi', 'sharp', 'flags', 'nan_dist_px', 'zkron', 'zkron_err', 'zkron_flag', 'zkron_masked', 'kron_auto', 'kron_auto_err')
+OBJECT_COLS = ('mag', 'magerr', 'snr', 'chi', 'sharp', 'flags', 'nan_dist_px', 'zkron', 'zkron_err', 'zkron_flag', 'zkron_masked')
 
 
 def field_dir(field: int, data_dir: Optional[str] = None) -> str:
@@ -45,8 +45,8 @@ def quadrant_name(ccd: int, qid: int) -> str:
 
 
 def _optional(path: str) -> Optional[str]:
-    """A product path, or None when the file was not downloaded (refunc/refcov/refsexcat are optional: without them
-    the loader uses the gain model for the variance and the image's own NaNs for the mask)."""
+    """A product path, or None when the file was not downloaded (refunc/refcov are optional: without them the loader
+    uses the gain model for the variance and the image's own NaNs for the mask)."""
     return path if os.path.exists(path) else None
 
 
@@ -100,9 +100,9 @@ def mutual_nearest(ra1, dec1, ra2, dec2, radius_arcsec: float = MATCH_ARCSEC) ->
 # ----------------------------------------------------------------------------------------------- per band, per quadrant
 
 def band_catalog(field: int, ccd: int, qid: int, band: str, data_dir: Optional[str] = None, with_kron: bool = True,
-                 with_sexcat: bool = True, overwrite: bool = False, require: Sequence[str] = ()) -> pd.DataFrame:
-    """One quadrant's DAOPhot catalog in one band, with our Kron photometry and SExtractor's MAG_AUTO attached;
-    cached under the field directory. `require` names optional products (refunc, refcov, refsexcat) that must exist."""
+                 overwrite: bool = False, require: Sequence[str] = ()) -> pd.DataFrame:
+    """One quadrant's DAOPhot catalog in one band, with our Kron photometry attached; cached under the field
+    directory. `require` names optional products (refunc, refcov) that must exist."""
     data_dir = data_dir or get_data_path()
     out_dir = os.path.join(field_dir(field, data_dir), 'quadrants')
     path = os.path.join(out_dir, f'ztf_{quadrant_name(ccd, qid)}_{band}.parquet')
@@ -129,13 +129,6 @@ def band_catalog(field: int, ccd: int, qid: int, band: str, data_dir: Optional[s
                            f'(MAGZP {magzp} vs {im.zero_point}, NMATCHES {hdul_nmatches} vs {im.header.get("NMATCHES")})')
     xi, yi = np.clip(np.round(cat.x.values - 1).astype(int), 0, im.shape[1] - 1), np.clip(np.round(cat.y.values - 1).astype(int), 0, im.shape[0] - 1)
     cat['nan_dist_px'] = distance_transform_edt(~im.bad)[yi, xi]              # distance to the nearest masked pixel
-    if with_sexcat and _optional(refimg_path(ztf_dir, field, ccd, qid, band, 'refsexcat')):
-        sex = Table.read(refimg_path(ztf_dir, field, ccd, qid, band, 'refsexcat'))['ALPHAWIN_J2000', 'DELTAWIN_J2000', 'MAG_AUTO', 'MAGERR_AUTO', 'FLAGS', 'CLASS_STAR'].to_pandas()
-        j, _ = mutual_nearest(cat.ra, cat.dec, sex.ALPHAWIN_J2000, sex.DELTAWIN_J2000)
-        has = j >= 0
-        for col, src in (('kron_auto', 'MAG_AUTO'), ('kron_auto_err', 'MAGERR_AUTO'), ('sexflags', 'FLAGS'), ('class_star', 'CLASS_STAR')):
-            cat[col] = np.where(has, sex[src].values[np.clip(j, 0, None)], np.nan)
-        cat['kron_auto'] += magzp                             # MAG_AUTO is instrumental too (same zero point: the same image)
     if with_kron:
         frame = kron.prepare(im, cat.ra.values, cat.dec.values)
         kron.moment_floor(frame, np.nan_to_num(cat.snr.values, nan=0.0))

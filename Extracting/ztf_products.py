@@ -1,8 +1,8 @@
 """ZTF deep reference-image products on IRSA: names, URLs, the per-field storage layout and the fetcher.
 
 Per quadrant and band IRSA serves the reference image (`refimg`), its per-pixel 1-sigma uncertainty in DN
-(`refunc`), the number of input frames per pixel (`refcov`), ZTF's DAOPhot PSF catalog (`refpsfcat`) and
-SExtractor catalog (`refsexcat`), plus logs. Products are stored one directory per field,
+(`refunc`), the number of input frames per pixel (`refcov`), ZTF's DAOPhot PSF catalog (`refpsfcat`) and a
+SExtractor catalog (`refsexcat`, not used), plus logs. Products are stored one directory per field,
 `<ztf_dir>/field000643/`; `tools/fetch_ztf_products.py` fills it with `fetch_product`.
 """
 import os
