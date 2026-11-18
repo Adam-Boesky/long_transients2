@@ -23,11 +23,11 @@ from scipy.ndimage import distance_transform_edt
 from scipy.spatial import cKDTree
 
 from . import kron, ps1_stack
-from .images import load_ztf_refimg
+from .ps1_stack import BANDS
+from .images import load_refimg
 from .utils import get_data_path
-from .ztf_images import product_dir, refimg_path
+from .ztf_products import product_dir, refimg_path
 
-BANDS = ('g', 'r', 'i')
 MERGE_ORDER = ('i', 'r', 'g')      # seed band first
 MATCH_ARCSEC = 1.0
 REF_SIZE_PX = 3200                 # reference-image side (Explanatory Supplement section 7.2)
@@ -122,7 +122,7 @@ def band_catalog(field: int, ccd: int, qid: int, band: str, data_dir: Optional[s
     cat['magzp'] = magzp
     cat['ccd'], cat['qid'] = int(ccd), int(qid)
     cat['edge_px'] = np.minimum.reduce([cat.x.values, cat.y.values, REF_SIZE_PX - cat.x.values, REF_SIZE_PX - cat.y.values])
-    im = load_ztf_refimg(refimg_path(ztf_dir, field, ccd, qid, band), unc_path=_optional(refimg_path(ztf_dir, field, ccd, qid, band, 'refunc')),
+    im = load_refimg(refimg_path(ztf_dir, field, ccd, qid, band), unc_path=_optional(refimg_path(ztf_dir, field, ccd, qid, band, 'refunc')),
                          cov_path=_optional(refimg_path(ztf_dir, field, ccd, qid, band, 'refcov')))
     if abs(im.zero_point - magzp) > 1e-6 or im.header.get('NMATCHES') != hdul_nmatches:   # the deep references are rebuilt on a rolling basis
         raise RuntimeError(f'{refimg_path(ztf_dir, field, ccd, qid, band, "refpsfcat")}: catalog and image come from different reference builds '
@@ -253,7 +253,7 @@ def quadrant_mask(field: int, ccd: int, qid: int, band: str, data_dir: Optional[
         if 'RADECSYS' in header:
             header.setdefault('RADESYS', header['RADECSYS']); del header['RADECSYS']
         return bad, WCS(header)
-    im = load_ztf_refimg(refimg_path(ztf_dir, field, ccd, qid, band), unc_path=_optional(refimg_path(ztf_dir, field, ccd, qid, band, 'refunc')),
+    im = load_refimg(refimg_path(ztf_dir, field, ccd, qid, band), unc_path=_optional(refimg_path(ztf_dir, field, ccd, qid, band, 'refunc')),
                          cov_path=_optional(refimg_path(ztf_dir, field, ccd, qid, band, 'refcov')))
     os.makedirs(os.path.dirname(path), exist_ok=True)
     np.savez(path, bad=np.packbits(im.bad), shape=np.array(im.shape))

@@ -28,7 +28,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from Extracting.utils import get_data_path  # noqa: E402
-from Extracting.ztf_images import fetch_product, product_dir, refimg_path, refimg_url  # noqa: E402
+from Extracting.ztf_products import fetch_product, product_dir, refimg_path, refimg_url  # noqa: E402
 
 MANIFEST = Path(__file__).resolve().parents[1] / 'Extracting' / 'footprint' / 'irsa_deep_quadrants.csv'
 STALE_MINUTES = 20.0          # a claim or IP lease not touched for this long belongs to a dead worker

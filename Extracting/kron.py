@@ -40,7 +40,7 @@ import sep
 from scipy.ndimage import gaussian_filter
 from skimage.segmentation import watershed
 
-from .images import Image, ZTF_GAIN_PER_FRAME
+from .images import Image
 from .utils import img_flux_to_ab_mag
 
 BKG_BOX_ARCSEC = 64.0          # sep background mesh (Source_Extractor used bw=bh=64 px on ZTF)
@@ -67,10 +67,7 @@ def noise(image: Image, bkg: sep.Background, per_pixel: bool = True) -> Tuple[np
     if per_pixel and image.variance is not None:
         err = np.sqrt(np.where(np.isnan(image.variance), np.nanmedian(image.variance), image.variance)).astype(np.float32)
         return err, None
-    gain = image.gain
-    if gain is None and image.survey == 'ztf':
-        gain = ZTF_GAIN_PER_FRAME * float(image.header['NFRAMES'])
-    return float(bkg.globalrms), gain
+    return float(bkg.globalrms), image.gain
 
 
 # Recipe values. "psphot.config" means the PS1 value in IPP:ippconfig/recipes/psphot.config; "default" means the
