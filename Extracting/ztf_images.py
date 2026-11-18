@@ -46,10 +46,12 @@ def field_dir(data_dir: str, field: int) -> str:
 
 
 def fits_table_valid(path: str) -> bool:
-    """A complete FITS file with at least one table HDU whose data can be read (catches truncation)."""
+    """A complete FITS file whose data can be read (catches truncation): a table HDU for catalogs, else the image."""
     try:
         with fits.open(path, memmap=False) as hdul:
-            return any(not h.is_image and h.data is not None for h in hdul[1:])
+            if any(not h.is_image for h in hdul[1:]):
+                return any(not h.is_image and h.data is not None for h in hdul[1:])
+            return hdul[0].data is not None and hdul[0].data.size > 0
     except Exception:
         return False
 
