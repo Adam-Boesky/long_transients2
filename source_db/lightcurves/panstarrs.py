@@ -41,7 +41,7 @@ Three things that matter, all from MAST's own guidance:
 
 Stored raw, reduced at render time
 ----------------------------------
-`Extracting.utils` drops `infoFlag & 2048` (defect) and `infoFlag2 & 4`
+`Source_Analysis.casjobs` drops `infoFlag & 2048` (defect) and `infoFlag2 & 4`
 (forced-photometry artifact) before plotting, and converts psfFlux to AB mag
 at zero point 8.9. The magnitude conversion is lossless so it happens here;
 the flag cut is lossy, so the flags are stored and the cut is registered in
@@ -113,7 +113,7 @@ def _objids(limit: Optional[int] = None) -> pd.DataFrame:
 
 def _run(upload, sql_for, chunk_id: str, task: str) -> pd.DataFrame:
     """Upload a table, run the join INTO MyDB, download, drop both tables."""
-    from Extracting.utils import MASTCASJOBS
+    from Source_Analysis.casjobs import MASTCASJOBS
 
     up, res = f'lt_{task}_{chunk_id}', f'lt_det_{task}_{chunk_id}'
     for t in (up, res):

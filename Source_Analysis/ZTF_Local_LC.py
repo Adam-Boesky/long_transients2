@@ -12,7 +12,16 @@ from astropy.coordinates import SkyCoord
 sys.path.append('/Users/adamboesky/Research/long_transients')
 sys.path.append('/n/home04/aboesky/berger/long_transients')
 
-from Extracting.utils import rcid_to_ccdid_qid
+
+
+def rcid_to_ccdid_qid(rcid: int) -> tuple:
+    """Convert a ZTF readout-channel ID to (ccdid, qid).
+
+    ZTF has 16 CCDs each with 4 quadrants, giving 64 readout channels.
+    The mapping is: rcid = (ccdid - 1) * 4 + (qid - 1).
+    """
+    return rcid // 4 + 1, rcid % 4 + 1
+
 
 # Source-level bits from ZTF Explanatory Supplement 10.3, plus bit 15 (32768):
 # cloud- or moon-affected epochs (DR23 release notes 9b).

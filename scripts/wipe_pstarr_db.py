@@ -1,4 +1,4 @@
-"""Wipe the Pan-STARRS CasJobs database: every table under the user in Extracting/utils.py.
+"""Wipe the Pan-STARRS CasJobs database: every table under the user in Source_Analysis/casjobs.py.
 
 For when the Pan-STARRS SQL extraction query changes. Check that user before running.
 
@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from Extracting.utils import MASTCASJOBS  # noqa: E402
+from Source_Analysis.casjobs import MASTCASJOBS  # noqa: E402
 
 
 def wipe_db():

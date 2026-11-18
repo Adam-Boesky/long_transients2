@@ -439,7 +439,7 @@ def test_every_region_matches_its_module():
     import inspect
     from source_db.constants import MATCH_RADIUS_ARCSEC, QUERY_REGIONS
     from source_db.lightcurves import irsa, panstarrs, sdss, ztf
-    from Source_Analysis import enrich_combined_tabs, filter_fields
+    from Source_Analysis import enrich_combined_tabs, filter_field
     from Source_Analysis.catalogs import erosita, wise
 
     for mod in (irsa, panstarrs, sdss, ztf, enrich_combined_tabs):
@@ -447,6 +447,6 @@ def test_every_region_matches_its_module():
     default = lambda fn, name: inspect.signature(fn).parameters[name].default
     radius = {r['key']: r['radius_arcsec'] for r in QUERY_REGIONS}
     assert radius['lightcurve'] == radius['catalog'] == MATCH_RADIUS_ARCSEC
-    assert radius['gaia'] == default(filter_fields.annotate_gaia, 'max_arcsec')
+    assert radius['gaia'] == default(filter_field.annotate_gaia, 'max_arcsec') == filter_field.GAIA_MATCH_ARCSEC
     assert radius['wise_beam'] == wise.BEAM_ARCSEC
     assert radius['erosita'] == erosita.MATCH_RADIUS_ARCSEC

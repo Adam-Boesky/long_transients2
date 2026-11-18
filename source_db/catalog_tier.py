@@ -13,10 +13,13 @@ import json
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 import numpy as np
 import pandas as pd
+import astropy.units as u
+from astropy.coordinates import SkyCoord, search_around_sky
+from astropy.table import Table
 
 from Extracting.utils import load_ecsv
 from Source_Analysis.catalogs._base import to_pandas_array
@@ -27,14 +30,15 @@ from source_db.paths import DEFAULT_OUT_DIR, REPO
 
 # (filename in <combined_dir>, catalog_tier label). Order fixes row order in the
 # output, so the smallest tables land first and a schema problem surfaces early.
-# `1_wide_association` holds ZTF-only detections with a PS1 source 1-3" away,
-# evaluated against that source; it is optional (absent from older runs).
+# `2` holds the PanSTARRS-only detections. `1_wide_association` (ZTF-only detections with a PS1 source 1-3" away)
+# is only in older runs and is no longer offered as a category; both are optional.
 TIERS: list[tuple[str, str]] = [
+    ('2_enriched.ecsv', '2'),
     ('1_wide_association_enriched.ecsv', '1_wide_association'),
     ('1_enriched.ecsv', '1'),
     ('0_enriched.ecsv', '0'),
 ]
-OPTIONAL_TIERS = {'1_wide_association'}
+OPTIONAL_TIERS = {'2', '1_wide_association'}
 
 
 # Values that upstream writes as a real number but means as "absent", mapped to
@@ -104,16 +108,66 @@ def read_combined(combined_dir: Path) -> pd.DataFrame:
     return out
 
 
+GROUP_RADIUS_ARCSEC = 1.0
+
+
+def add_group_ids(tables: Iterable[Table], radius_arcsec: float = GROUP_RADIUS_ARCSEC) -> None:
+    """Link rows within radius_arcsec of each other, across fields and across tables (plan_filter_review.md #1).
+
+    Overlapping fields find the same object more than once. Linked rows (chains included) share an integer
+    `group_id` (1, 2, ..., numbered by the group's mean RA); a row with no partner gets -1. Rows are never
+    dropped or merged.
+    """
+    tables = [t for t in tables if len(t) > 0]
+    if not tables:
+        return
+    ra = np.concatenate([np.asarray(t['ra'], dtype=float) for t in tables])
+    dec = np.concatenate([np.asarray(t['dec'], dtype=float) for t in tables])
+    coords = SkyCoord(ra, dec, unit='deg')
+    i, j, _, _ = search_around_sky(coords, coords, radius_arcsec * u.arcsec)
+
+    # Union-find over the pairs, so chains A-B-C end up in one group
+    parent = np.arange(len(ra))
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for a, b in zip(i[i < j], j[i < j]):
+        ra_, rb_ = find(a), find(b)
+        if ra_ != rb_:
+            parent[max(ra_, rb_)] = min(ra_, rb_)
+    roots = np.array([find(x) for x in range(len(ra))])
+
+    group_ids = np.full(len(ra), -1, dtype=np.int64)
+    uniq, inv, counts = np.unique(roots, return_inverse=True, return_counts=True)
+    xyz = coords.cartesian.xyz.value.T  # average on the unit sphere, safe across RA=0
+    sums = np.zeros((len(uniq), 3))
+    np.add.at(sums, inv, xyz)
+    multi = np.where(counts > 1)[0]
+    if len(multi):
+        # Number groups by mean RA (then Dec) so the ids don't depend on file order
+        mean = SkyCoord(*sums[multi].T, representation_type='cartesian').spherical
+        order = np.lexsort((mean.lat.deg, mean.lon.deg))
+        number = np.zeros(len(uniq), dtype=np.int64)
+        number[multi[order]] = np.arange(1, len(multi) + 1)
+        in_group = counts[inv] > 1
+        group_ids[in_group] = number[inv[in_group]]
+
+    start = 0
+    for t in tables:
+        t['group_id'] = group_ids[start:start + len(t)]
+        start += len(t)
+
+
 def regroup(df: pd.DataFrame) -> None:
     """Renumber `group_id` over all tiers together, in place.
 
     Each combined table numbers its duplicate groups from 1, so stacking them
     would make unrelated sources in different tiers share an id; one pass over
     the stacked rows also links an object found in more than one tier. Same
-    1" rule and numbering as `combine_filtered_tabs.add_group_ids`.
+    1" rule and numbering as `add_group_ids`.
     """
-    from astropy.table import Table
-    from Source_Analysis.combine_filtered_tabs import add_group_ids
     if 'group_id' not in df.columns:
         return
     t = Table({'ra': df['ra'].to_numpy(float), 'dec': df['dec'].to_numpy(float)})

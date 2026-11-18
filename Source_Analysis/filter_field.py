@@ -75,7 +75,7 @@ derived.
 import os
 import warnings
 from dataclasses import dataclass, field, replace
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Iterable, Union
 
 import numpy as np
 import pandas as pd
@@ -85,10 +85,12 @@ from astropy.time import Time
 import astropy.units as u
 from scipy.spatial import cKDTree
 from scipy.stats import norm
+from matplotlib.font_manager import FontProperties
+from matplotlib.textpath import TextPath
 
 from Extracting.field_tables import BANDS, field_dir
 from Extracting.utils import get_data_path
-from Source_Analysis.filter_fields import Envelope_KDE, build_kde_envelopes
+from source_db.constants import SIGMA_CAP
 from Extracting import ps1_stack, ps1_skycells
 
 CATALOG = {0: 'in_both', 1: 'in_ztf', 2: 'in_pstarr'}
@@ -612,11 +614,76 @@ def widen_faint_rows(kde_ys: np.ndarray, mag_grid: np.ndarray, dmag_grid: np.nda
     return out
 
 
+class Envelope_KDE:
+    """Rolling KDE envelope over the (mag, Δmag) plane for one band: `get_percentile` for plotting, `sigma` for judging."""
+
+    def __init__(self, mag_grid: np.ndarray, dmag_grid: np.ndarray, kde_ys: np.ndarray):
+        self.mag_grid = mag_grid
+        self.dmag_grid = dmag_grid
+        self.kde_ys = kde_ys  # shape (N_mag, N_dmag)
+
+    def get_percentile(
+        self,
+        mag_grid: np.ndarray,
+        percentile: Union[float, Iterable[float]],
+    ) -> np.ndarray:
+        """Return the Δmag value at *percentile* for each entry of *mag_grid*.
+
+        Returns a 1-D array if *percentile* is scalar, otherwise a 2-D array
+        of shape (len(percentiles), len(mag_grid)).
+        """
+        scalar = isinstance(percentile, (int, float))
+        percentiles = [percentile] if scalar else list(percentile)
+
+        cdf = np.cumsum(self.kde_ys, axis=1) / np.sum(self.kde_ys, axis=1, keepdims=True)
+
+        results = np.array([
+            [np.interp(p, cdf[i], self.dmag_grid) for i in range(len(self.mag_grid))]
+            for p in percentiles
+        ])
+        results = np.array([
+            np.interp(mag_grid, self.mag_grid, results[i])
+            for i in range(len(percentiles))
+        ])
+
+        return results[0] if scalar else results
+
+    def sigma(self, mag: np.ndarray, dmag: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Signed sigma of each (mag, Δmag): Φ^-1 of the Δmag CDF at mag, bilinear on the grid; NaN where undefined.
+
+        Returns (sigma, capped). Negative = brighter in ZTF than PS1. |sigma| beyond what the grid resolves is
+        reported as ±SIGMA_CAP with capped=True.
+        """
+        mag, dmag = np.asarray(mag, float), np.asarray(dmag, float)
+        ys = np.nan_to_num(self.kde_ys, nan=0.0)
+        tot = ys.sum(axis=1, keepdims=True)
+        cdf = np.divide(np.cumsum(ys, axis=1), tot, out=np.full_like(ys, np.nan), where=tot > 0)
+        mg, dg = self.mag_grid, self.dmag_grid
+        fi = np.clip((mag - mg[0]) / (mg[1] - mg[0]), 0, len(mg) - 1 - 1e-9)
+        fj = np.clip((dmag - dg[0]) / (dg[1] - dg[0]), 0, len(dg) - 1 - 1e-9)
+        bad = ~np.isfinite(mag) | ~np.isfinite(dmag)
+        fi, fj = np.nan_to_num(fi), np.nan_to_num(fj)
+        i0, j0 = fi.astype(int), fj.astype(int)
+        w, u = fi - i0, fj - j0
+        c = ((1 - w) * ((1 - u) * cdf[i0, j0] + u * cdf[i0, j0 + 1]) +
+             w * ((1 - u) * cdf[i0 + 1, j0] + u * cdf[i0 + 1, j0 + 1]))
+        p_cap = norm.cdf(-SIGMA_CAP)
+        low = (c < p_cap) | (dmag < dg[0])
+        high = (c > 1 - p_cap) | (dmag > dg[-1])
+        capped = (low | high) & ~bad & np.isfinite(c)
+        z = norm.ppf(np.clip(c, p_cap, 1 - p_cap))
+        # Off the Δmag grid the CDF above is the grid edge's, not the cap; report the cap.
+        z[capped & low] = -SIGMA_CAP
+        z[capped & high] = SIGMA_CAP
+        z[bad | ~np.isfinite(c)] = np.nan
+        return z, capped
+
+
 def kde_envelopes(tabs: Dict[str, Table], mag_grid: np.ndarray = np.arange(16, 24, 0.25),
                   dmag_grid: np.ndarray = np.linspace(-5, 5, 500), half_bin_width: float = 0.5,
                   min_dmagerr: float = 0.01, n_sigma: float = 10.0, chunk: int = 200_000,
                   monotone_from: Optional[float] = ENVELOPE_MONOTONE_FROM) -> Dict[str, Envelope_KDE]:
-    """Same envelopes as `filter_fields.build_kde_envelopes` (rolling window of +-half_bin_width around each grid
+    """Rolling KDE envelopes (a window of +-half_bin_width around each grid
     magnitude, a Gaussian per source with bandwidth = combined error, floored at min_dmagerr), computed fast: each
     source's Gaussian is evaluated once, only within +-n_sigma (beyond 10 sigma the weight is ~1e-23), and accumulated into sub-bins of the grid step; a
     window is the sum of the sub-bins it covers. Rows are normalised later (Envelope_KDE builds the CDF per row).
@@ -907,7 +974,6 @@ class Waterfall:
         import schemdraw
         from schemdraw import flow
         from schemdraw.elements import Line, Rect, Label
-        from Source_Analysis.filter_fields import _box_width_for_text
         text = lambda c: f"objects: {c['objects']:,}\n" + '\n'.join(f'{k}: {c[k]:,}' for k in COMBOS)
         size = lambda t, pad: (_box_width_for_text(t, padding=pad), 0.45 * (t.count('\n') + 1) + 0.4)
         label_w = max(_box_width_for_text(l, padding=0.0) for l in self.steps[1:]) if len(self.steps) > 1 else 0.0
@@ -1182,3 +1248,20 @@ def filter_field(field_id: int, data_dir: Optional[str] = None, cuts: Cuts = Cut
         for b, env in envelopes.items():
             np.savez(os.path.join(out, f'envelope_{b}.npz'), mag_grid=env.mag_grid, dmag_grid=env.dmag_grid, kde_ys=env.kde_ys)
     return src, envelopes, candidates, waterfalls
+
+
+def _box_width_for_text(text: str, fontsize: float = 12.5, inches_per_unit: float = 0.5, padding: float = 0.5) -> float:
+    """Return the minimum schemdraw Box w needed to contain `text` without clipping.
+
+    Uses TextPath to measure glyph extents, then applies an empirical 1.13× correction
+    to match matplotlib's actual rendered width (TextPath underestimates by ~13%).
+    """
+    fp = FontProperties(size=fontsize)
+    max_w_pts = 0.0
+    for line in text.split('\n'):
+        if line.strip():
+            tp = TextPath((0, 0), line, prop=fp)
+            bb = tp.get_extents()
+            max_w_pts = max(max_w_pts, bb.width)
+    text_units = (max_w_pts / 72.0) / inches_per_unit * 1.13
+    return max(3.0, text_units + padding)

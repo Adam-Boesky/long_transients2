@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import traceback
 import numpy as np
 import pandas as pd
@@ -15,7 +16,8 @@ from astroquery.ipac.irsa import Irsa
 from astropy.coordinates import SkyCoord
 from concurrent.futures import ThreadPoolExecutor
 
-from Extracting.utils import get_pstarr_lc_from_coord, get_pstarr_lc_from_id, img_flux_to_ab_mag, throttled_sdss_query
+from Extracting.utils import img_flux_to_ab_mag
+from Source_Analysis.casjobs import get_pstarr_lc_from_coord, get_pstarr_lc_from_id
 from Source_Analysis.ZTF_Local_LC import ZTF_LC, BAD_CATFLAG_MASK
 from Source_Analysis import followup
 
@@ -23,6 +25,38 @@ from Source_Analysis import followup
 # *why* (rate limit, server error, etc.) instead of just the resulting parse exception.
 import astroquery.sdss.core as _sdss_core
 _orig_sdss_parse_result = _sdss_core.SDSSClass._parse_result
+
+
+
+# Per-process SDSS rate-limit lock (set by init_worker_sdss_lock in parallel contexts).
+# SDSS SkyServer enforces a hard cap of 60 queries/minute (>=1 second between queries) and
+# blocks with an HTTP 403 if that's exceeded:
+# https://skyserver.sdss.org/dr14/en/help/docs/limits.aspx
+SDSS_MIN_QUERY_INTERVAL_SEC = 1.1
+_sdss_lock = None
+_sdss_last_call_time = None
+
+
+def init_worker_sdss_lock(lock, last_call_time) -> None:
+    """Initializer for Pool/ProcessPoolExecutor workers — stores the shared SDSS rate-limit lock."""
+    global _sdss_lock, _sdss_last_call_time
+    _sdss_lock = lock
+    _sdss_last_call_time = last_call_time
+
+
+def throttled_sdss_query(query_fn, *args, **kwargs):
+    """Call query_fn (an SDSS query), pausing as needed so calls across all worker processes
+    stay under SDSS's rate limit."""
+    if _sdss_lock is None:
+        return query_fn(*args, **kwargs)
+    with _sdss_lock:
+        wait = SDSS_MIN_QUERY_INTERVAL_SEC - (time.time() - _sdss_last_call_time.value)
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            return query_fn(*args, **kwargs)
+        finally:
+            _sdss_last_call_time.value = time.time()
 
 
 def _sdss_parse_result_with_diagnostics(self, response, verbose=False):
