@@ -251,7 +251,7 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
     a PS1 object). Per band b: the ZTF
     image the band is judged in, `{b}_ccd`, `{b}_qid` (the detection's own image; for a band without a detection the
     covering image `field_tables.ztf_coverage` chose: on valid pixels, clean, deepest), with `{b}_ztf_covered`,
-    `{b}_ztf_nan_dist` (distance to its nearest masked pixel) and `{b}_ztf_maglim` (its nominal depth); `{b}_ztf_detected`,
+    `{b}_ztf_nan_dist` (distance to its nearest masked pixel) and `{b}_ztf_maglim` (its nominal depth);
     `{b}_ztf_psf/_err` (DAOPhot), `{b}_ztf_kron/_err` (our Kron), `{b}_ztf_kron_masked`, `{b}_ztf_kron_rap` (our Kron
     aperture radius, "), `{b}_ztf_snr`, `{b}_ztf_sharp`, `{b}_ztf_flags`; `{b}_ps1_detected` (a PS1
     detection, not forced photometry), `{b}_ps1_psf/_err`, `{b}_ps1_kron/_err`,
@@ -296,7 +296,6 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
             f'{b}_ztf_nan_dist': image('nan_dist_px', f'{b}_nan_dist_px', np.float32, 0.0),
             f'{b}_ztf_maglim': image('maglim', f'{b}_maglim', np.float32, np.nan),
             f'{b}_ztf_covered': np.concatenate([obj[f'{b}_covered'].values, ps1[f'{b}_covered'].values[ps1_only]]),
-            f'{b}_ztf_detected': np.concatenate([det, np.zeros(n_p, bool)]),
             f'{b}_ztf_psf': take('mag'), f'{b}_ztf_psf_err': floor_err(take('magerr')),
             f'{b}_ztf_kron': take('zkron'), f'{b}_ztf_kron_err': floor_err(take('zkron_err')),
             f'{b}_ztf_kron_masked': take('zkron_masked').astype(np.float32),
@@ -349,6 +348,11 @@ def point_source(src: pd.DataFrame) -> np.ndarray:
 
 # ----------------------------------------------------------------------------------------------- trust, detection, catalogs
 
+def ztf_detected(src: pd.DataFrame, b: str) -> np.ndarray:
+    """ZTF's DAOPhot catalog has the object in band b: it has a ZTF magnitude there."""
+    return np.isfinite(src[f'{b}_ztf_psf'].values)
+
+
 def bright_star_masked(src: pd.DataFrame) -> np.ndarray:
     """Inside a Gaia G < BRIGHT_STAR_G_MAX star's mask: its circle (`bright_star_d_over_R` < 1) or one of its spike
     boxes (`in_star_spike`), as calibrated on ZTF's images (`annotate_bright_stars`)."""
@@ -361,7 +365,7 @@ def ztf_checks(src: pd.DataFrame, b: str, point: np.ndarray, cuts: Cuts = Cuts()
     a PS1 object it has nothing to be compared with, and only coverage is checked). With `cuts.bright_star_mask`,
     first the position outside every bright star's mask: ZTF's data there (detections, limits) belong to the star's
     halo or spikes. PS1 judges its own side near stars with its spike and star-core flags (`ps1_checks`)."""
-    det = src[f'{b}_ztf_detected'].values
+    det = ztf_detected(src, b)
     clear = src[f'{b}_ztf_nan_dist'].values > NAN_RADIUS_PX                           # the detection's image, or the limit's
     kron_ok = src[f'{b}_ztf_kron_masked'].values <= KRON_MAX_MASKED
     mask = [('ZTF: outside bright-star masks', ~bright_star_masked(src))] if cuts.bright_star_mask else []
@@ -410,7 +414,7 @@ def detection_status(src: pd.DataFrame, b: str) -> Tuple[np.ndarray, np.ndarray]
     """Step 2, detection: (ZTF, PS1) status of band b per object, what each survey has there: 'D' a measurement at
     S/N >= SNR_MIN, 'L' a measurement below it (a ZTF detection under SNR_MIN, a PS1 measurement, forced fluxes
     included), 'U' nothing measured (no ZTF detection, or no PS1 object): the survey's limit stands in."""
-    z = np.where(~src[f'{b}_ztf_detected'].values, 'U', np.where(src[f'{b}_ztf_snr'].values >= SNR_MIN, 'D', 'L'))
+    z = np.where(~ztf_detected(src, b), 'U', np.where(src[f'{b}_ztf_snr'].values >= SNR_MIN, 'D', 'L'))
     p = np.where(src.ps1_idx.values < 0, 'U', np.where(src[f'{b}_ps1_snr'].values >= SNR_MIN, 'D', 'L'))
     return z, p
 
@@ -460,7 +464,7 @@ def completeness_references(src: pd.DataFrame, cuts: Cuts = Cuts()) -> Tuple[Dic
     population_ok = pm_ok & plx_ok
     position_ok = mask & isolated & clear_of_kron & population_ok & ~ps1_skycell_bad(src)   # no PS1 data to recover with, or to be recovered
     z_sharp_ok = ~sharpness_fails(src, point, cuts)
-    z_trust = {b: _passes(ztf_checks(src, b, point, cuts)) & src[f'{b}_ztf_detected'].values & (src[f'{b}_ztf_snr'].values >= SNR_MIN) for b in BANDS}
+    z_trust = {b: _passes(ztf_checks(src, b, point, cuts)) & ztf_detected(src, b) & (src[f'{b}_ztf_snr'].values >= SNR_MIN) for b in BANDS}
     p_trust = {b: _passes(ps1_checks(src, b, cuts)) & src[f'{b}_ps1_detected'].values & (src[f'{b}_ps1_snr'].values >= SNR_MIN) for b in BANDS}
     n_z, n_p = sum(z_trust[b].astype(int) for b in BANDS), sum(p_trust[b].astype(int) for b in BANDS)
     stack_ok = (src.ps1_nStackDetections.values >= PS1_MIN_STACK_DETECTIONS) & ~_bits(src.ps1_qualityFlag.values, BAD_STACK | SUSPECT_STACK)
@@ -492,7 +496,7 @@ def completeness_limits(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
         z_cap = {(k // 10, k % 10): float(v) for k, v in pd.Series(src[f'{b}_ztf_maglim'].values[has]).groupby(key[has]).first().items()}
         p_cap = {q: ps1_stack.STACK_5SIG[b] for q in quads}
         for survey, ref, rec, mag, cap in (('ps1', z_refs[b], np.isfinite(src[f'{b}_ps1_psf'].values), reference_magnitude(src, b, 'ztf', point), p_cap),
-                                           ('ztf', p_refs[b], src[f'{b}_ztf_detected'].values, reference_magnitude(src, b, 'ps1', point), z_cap)):
+                                           ('ztf', p_refs[b], ztf_detected(src, b), reference_magnitude(src, b, 'ps1', point), z_cap)):
             lut = np.full(200, np.nan)
             for (c, q), v in completeness_limit(np.where(ref, mag, np.nan), rec, key, cap).items():
                 lut[c * 10 + q] = v
@@ -541,7 +545,7 @@ def assign_catalogs(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
     point = point_source(src)
     status = {b: band_status(src, b, point, cuts) for b in BANDS}
     raw = {b: comparison(z, p) for b, (z, p) in status.items()}
-    n_measured = sum((src[f'{b}_ztf_detected'].values | src[f'{b}_ps1_meas'].values).astype(int) for b in BANDS)
+    n_measured = sum((ztf_detected(src, b) | src[f'{b}_ps1_meas'].values).astype(int) for b in BANDS)
     catalog, reason = object_catalog(raw, n_measured)
     cols = {'catalog': catalog, 'catalog_reason': reason, 'point_source': point}
     for b, (z, p) in status.items():
@@ -1053,7 +1057,7 @@ def ztf_sharpness(src: pd.DataFrame) -> np.ndarray:
     num = np.zeros(len(src)); den = np.zeros(len(src))
     for b in BANDS:
         sharp, snr = src[f'{b}_ztf_sharp'].values, src[f'{b}_ztf_snr'].values
-        ok = src[f'{b}_ztf_detected'].values & np.isfinite(sharp) & (snr > 0)
+        ok = ztf_detected(src, b) & np.isfinite(sharp) & (snr > 0)
         num[ok] += sharp[ok] * snr[ok] ** 2; den[ok] += snr[ok] ** 2
     return np.divide(num, den, out=np.full(len(src), np.nan), where=den > 0)
 
@@ -1112,7 +1116,7 @@ def quality_steps(src: pd.DataFrame, point: np.ndarray, cuts: Cuts = Cuts()) -> 
     def per_band(group, checks_of):             # band -> [(label, passes)], the same labels in every band
         checks = {b: checks_of(b) for b in BANDS}
         return [(group, label, {b: checks[b][i][1] for b in BANDS}) for i, (label, _) in enumerate(checks[BANDS[0]])]
-    start = per_band('structure', lambda b: [('measured by ZTF or PS1', src[f'{b}_ztf_detected'].values | src[f'{b}_ps1_meas'].values)])
+    start = per_band('structure', lambda b: [('measured by ZTF or PS1', ztf_detected(src, b) | src[f'{b}_ps1_meas'].values)])
     quality = per_band('quality', lambda b: ztf_checks(src, b, point, cuts) + ps1_checks(src, b, cuts))
     comparable = per_band('comparison', lambda b: [(COMPARABLE, src[f'{b}_cat'].values >= 0)])
     return start + quality + comparable

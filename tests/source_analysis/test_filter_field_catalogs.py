@@ -29,7 +29,7 @@ def object_row(ztf: str, ps1: str, n_stack_detections: int = 3) -> dict:
         z = {'det': False, 'snr': np.nan, 'flags': 0, 'covered': True, **ZTF[zc]}
         flux, err, flag, flag2, qf = PS1[pc]
         meas = np.isfinite(flux)
-        r.update({f'{b}_ztf_detected': z['det'], f'{b}_ztf_snr': z['snr'], f'{b}_ztf_flags': z['flags'], f'{b}_ztf_sharp': z.get('sharp', 0.0),
+        r.update({f'{b}_ztf_snr': z['snr'], f'{b}_ztf_flags': z['flags'], f'{b}_ztf_sharp': z.get('sharp', 0.0),
                   f'{b}_ztf_covered': z['covered'], f'{b}_ztf_nan_dist': 20.0, f'{b}_ztf_kron_masked': 0.0,
                   f'{b}_ztf_psf': 20.0 if z['det'] else np.nan, f'{b}_ztf_psf_err': 0.1, f'{b}_ztf_kron': np.nan,
                   f'{b}_ztf_kron_err': np.nan, f'{b}_ztf_kron_rap': np.nan, f'{b}_ps1_kron_rad': np.nan, f'{b}_ztf_maglim': 21.0,
@@ -299,7 +299,7 @@ def _reference_field(rng, n=6000, kron_offset=0.0):
     rows = [object_row('DDD', 'DDD' if r else '---') for r in rec] + [object_row('DDD' if r else 'UUU', 'DDD') for r in rec]
     s = pd.DataFrame(rows)
     for b in BANDS:
-        s[f'{b}_ztf_psf'] = np.where(s[f'{b}_ztf_detected'], np.r_[mag, mag], np.nan); s[f'{b}_ztf_kron'] = s[f'{b}_ztf_psf'] - kron_offset; s[f'{b}_ztf_kron_err'] = 0.1
+        s[f'{b}_ztf_psf'] = np.where(ff.ztf_detected(s, b), np.r_[mag, mag], np.nan); s[f'{b}_ztf_kron'] = s[f'{b}_ztf_psf'] - kron_offset; s[f'{b}_ztf_kron_err'] = 0.1
         s[f'{b}_ps1_psf'] = np.where(s[f'{b}_ps1_detected'], np.r_[mag, mag], np.nan); s[f'{b}_ps1_kron'] = s[f'{b}_ps1_psf'] - kron_offset; s[f'{b}_ps1_kron_err'] = 0.1
         s[f'{b}_ztf_maglim'] = 23.6; s[f'{b}_ps1_nFrames'] = 30.0
     return s, mag, rec
