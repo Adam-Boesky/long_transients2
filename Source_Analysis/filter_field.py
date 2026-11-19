@@ -139,21 +139,24 @@ NO_CUTS = Cuts(bright_star_mask=False, sharp_max=None, sharp_point_only=False, p
 
 # ----------------------------------------------------------------------------------------------- loading
 
-BAND_COLS = ['ra', 'dec', 'ccd', 'qid', 'mag', 'magerr', 'snr', 'chi', 'sharp', 'flags', 'nan_dist_px', 'maglim', 'zkron', 'zkron_err', 'zkron_masked', 'zkron_rap']
-OBJ_COLS = ['ra', 'dec'] + [f'{b}_{c}' for b in BANDS for c in ('idx', 'covered', 'ccd', 'qid', 'nan_dist_px', 'maglim', 'ps1_covered', 'ps1_nframes_local')]
-PS1_COLS = (['PanSTARR_ID', 'ra', 'dec', 'qualityFlag', 'nStackDetections']
-            + [f'{b}_{c}' for b in BANDS for c in ('detected', 'projcell', 'skycell')]
-            + [f'{b}{c}' for b in BANDS for c in ('PSFMag', 'PSFMagErr', 'KronMag', 'KronMagErr', 'PSFFlux', 'PSFFluxErr',
-                                                  'infoFlag', 'infoFlag2', 'psfQfPerfect', 'sky', 'nFrames', 'KronRad')]
-            + [f'{b}_{c}' for b in BANDS for c in ('covered', 'ccd', 'qid', 'nan_dist_px', 'maglim', 'nframes_local')])
-
-
-def load_field(field_id: int, data_dir: Optional[str] = None) -> Tuple[Dict[str, pd.DataFrame], pd.DataFrame, pd.DataFrame]:
-    """The field tables, only the columns the filter reads."""
-    d = field_dir(field_id, data_dir)
-    bands = {b: pd.read_parquet(os.path.join(d, f'ztf_{b}.parquet'), columns=BAND_COLS) for b in BANDS}
-    return (bands, pd.read_parquet(os.path.join(d, 'ztf_objects.parquet'), columns=OBJ_COLS),
-            pd.read_parquet(os.path.join(d, 'ps1.parquet'), columns=PS1_COLS), pd.read_parquet(os.path.join(d, 'matches.parquet')))
+def load_merged(field_id: int, data_dir: Optional[str] = None) -> pd.DataFrame:
+    """The field's merged table (`field_tables.merge_tables`), with the ERR_FLOOR_MAG calibration floor added to every
+    error and S/N, and `{b}_ps1_meas` (a finite flux with a positive error, forced included) and `{b}_ps1_snr`."""
+    src = pd.read_parquet(os.path.join(field_dir(field_id, data_dir), 'merged.parquet'))
+    cols = {}
+    for b in BANDS:
+        cols[f'{b}_ztf_psf_err'] = floor_err(src[f'{b}_ztf_psf_err'].values)
+        cols[f'{b}_ztf_kron_err'] = floor_err(src[f'{b}_ztf_kron_err'].values)
+        cols[f'{b}_ztf_snr'] = floor_snr(src[f'{b}_ztf_snr'].values)
+        cols[f'{b}_ps1_psf_err'] = floor_err(src[f'{b}_ps1_psf_err'].values)
+        cols[f'{b}_ps1_kron_err'] = floor_err(src[f'{b}_ps1_kron_err'].values)
+        flux = src[f'{b}_ps1_flux'].values
+        err = floor_flux_err(flux, src[f'{b}_ps1_flux_err'].values)
+        cols[f'{b}_ps1_flux_err'] = err
+        meas = np.isfinite(flux) & (err > 0)
+        cols[f'{b}_ps1_meas'] = meas
+        cols[f'{b}_ps1_snr'] = np.where(meas, flux / np.where(err > 0, err, 1.0), np.nan)
+    return _attach(src, cols)
 
 
 def _bits(values: np.ndarray, bit: int) -> np.ndarray:
@@ -241,87 +244,6 @@ def completeness_limit(mag: np.ndarray, recovered: np.ndarray, quad: np.ndarray,
         out[q] = float(np.nanmin([v if np.isfinite(v) else field_limit, c]))
     return out
 
-
-def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.DataFrame, matches: pd.DataFrame) -> pd.DataFrame:
-    """One row per object: every ZTF object (with its PS1 match, if any) followed by every unmatched PS1 object.
-
-    Object-level: `ra`, `dec` (the ZTF position for ZTF objects), `ps1_ra`, `ps1_dec` (the PS1 object's own position),
-    `ztf_idx`, `ps1_idx` (-1 without one), `ps1_objid` (PS1's objID, -1 without a PS1 object), `ps1_qualityFlag`,
-    `ps1_nStackDetections`, `{b}_ps1_projcell`, `{b}_ps1_skycell` (the skycell each band's PS1 row came from; -1 without
-    a PS1 object). Per band b: the ZTF
-    image the band is judged in, `{b}_ccd`, `{b}_qid` (the detection's own image; for a band without a detection the
-    covering image `field_tables.ztf_coverage` chose: on valid pixels, clean, deepest), with `{b}_ztf_covered`,
-    `{b}_ztf_nan_dist` (distance to its nearest masked pixel) and `{b}_ztf_maglim` (its nominal depth);
-    `{b}_ztf_psf/_err` (DAOPhot), `{b}_ztf_kron/_err` (our Kron), `{b}_ztf_kron_masked`, `{b}_ztf_kron_rap` (our Kron
-    aperture radius, "), `{b}_ztf_snr`, `{b}_ztf_sharp`, `{b}_ztf_flags`; `{b}_ps1_detected` (a PS1
-    detection, not forced photometry), `{b}_ps1_psf/_err`, `{b}_ps1_kron/_err`,
-    `{b}_ps1_flux/_err`, `{b}_ps1_kron_rad` (PS1's Kron aperture radius, "), `{b}_ps1_snr` (flux / error), `{b}_ps1_meas` (a flux with a positive error, forced included),
-    `{b}_ps1_infoFlag`, `{b}_ps1_infoFlag2` (0 without a PS1 object), `{b}_ps1_psfQfPerfect`, `{b}_ps1_sky` (residual
-    sky, Jy/arcsec^2), `{b}_ps1_nFrames` (the object's own stack input frames, NaN without a PS1 object),
-    `{b}_ps1_nframes_local` (the median nFrames of the nearest PS1 objects; the stack depth where the object has none of
-    its own, see `ps1_depth`) and `{b}_ps1_covered` (a PS1 object measured in b within 1': its stack reaches the
-    position), both from the untrimmed PS1 partitions at build time (`field_tables.ps1_neighbourhood`).
-    `completeness_limits` adds the limits `{b}_ztf_limit` / `{b}_ps1_limit`.
-
-    Every error and S/N here carries the ERR_FLOOR_MAG calibration floor (`floor_err`, `floor_flux_err`,
-    `floor_snr`); the field tables keep the catalogs' own values.
-    """
-    obj_ps1 = np.full(len(obj), -1); obj_ps1[matches.ztf_obj.values] = matches.ps1.values      # the match table, both ways
-    is_matched = np.zeros(len(ps1), bool); is_matched[matches.ps1.values] = True
-    ps1_only = np.flatnonzero(~is_matched)
-    n_z, n_p = len(obj), len(ps1_only)
-    ps1_idx = np.concatenate([obj_ps1, ps1_only])
-    has_ps1 = ps1_idx >= 0
-    pi = np.where(has_ps1, ps1_idx, 0)
-    from_ps1 = lambda values, fill: np.where(has_ps1, values[pi], fill)
-    cols = {
-        'ra': np.concatenate([obj.ra.values, ps1.ra.values[ps1_only]]),
-        'dec': np.concatenate([obj.dec.values, ps1.dec.values[ps1_only]]),
-        'ztf_idx': np.concatenate([np.arange(n_z), np.full(n_p, -1)]),
-        'ps1_idx': ps1_idx,
-        'ps1_objid': from_ps1(ps1.PanSTARR_ID.values.astype(np.int64), -1),
-        'ps1_qualityFlag': from_ps1(ps1.qualityFlag.fillna(0).values.astype(np.int64), 0),
-        'ps1_nStackDetections': from_ps1(ps1.nStackDetections.fillna(0).values.astype(np.int16), 0),
-        'ps1_ra': from_ps1(ps1.ra.values, np.nan), 'ps1_dec': from_ps1(ps1.dec.values, np.nan),
-    }
-    nan_p = np.full(n_p, np.nan)
-    for b in BANDS:
-        cat = bands[b]; zi = obj[f'{b}_idx'].values; det = zi >= 0
-        take = lambda col: np.concatenate([np.where(det, cat[col].values[np.clip(zi, 0, None)], np.nan), nan_p])
-        # the image the band is judged in: the detection's own, else the covering image chosen at build time
-        image = lambda col, obj_col, dtype, fill: np.concatenate([
-            np.where(det, cat[col].values[np.clip(zi, 0, None)], obj[obj_col].values), ps1[obj_col].values[ps1_only]]).astype(dtype)
-        cols.update({
-            f'{b}_ccd': image('ccd', f'{b}_ccd', np.int16, -1), f'{b}_qid': image('qid', f'{b}_qid', np.int8, -1),
-            f'{b}_ztf_nan_dist': image('nan_dist_px', f'{b}_nan_dist_px', np.float32, 0.0),
-            f'{b}_ztf_maglim': image('maglim', f'{b}_maglim', np.float32, np.nan),
-            f'{b}_ztf_covered': np.concatenate([obj[f'{b}_covered'].values, ps1[f'{b}_covered'].values[ps1_only]]),
-            f'{b}_ztf_psf': take('mag'), f'{b}_ztf_psf_err': floor_err(take('magerr')),
-            f'{b}_ztf_kron': take('zkron'), f'{b}_ztf_kron_err': floor_err(take('zkron_err')),
-            f'{b}_ztf_kron_masked': take('zkron_masked').astype(np.float32),
-            f'{b}_ztf_kron_rap': take('zkron_rap').astype(np.float32),
-            f'{b}_ztf_snr': floor_snr(take('snr')), f'{b}_ztf_sharp': take('sharp').astype(np.float32),
-            f'{b}_ztf_flags': np.nan_to_num(take('flags'), nan=0).astype(np.int16),
-        })
-        cols[f'{b}_ps1_detected'] = from_ps1(ps1[f'{b}_detected'].values.astype(bool), False)
-        cols[f'{b}_ps1_projcell'] = from_ps1(ps1[f'{b}_projcell'].fillna(-1).values.astype(np.int32), -1)   # the skycell the band's row came from
-        cols[f'{b}_ps1_skycell'] = from_ps1(ps1[f'{b}_skycell'].fillna(-1).values.astype(np.int16), -1)
-        for kind, col in (('psf', 'PSFMag'), ('psf_err', 'PSFMagErr'), ('kron', 'KronMag'), ('kron_err', 'KronMagErr'),
-                          ('flux', 'PSFFlux'), ('flux_err', 'PSFFluxErr'), ('psfQfPerfect', 'psfQfPerfect'), ('sky', 'sky'),
-                          ('kron_rad', 'KronRad')):
-            cols[f'{b}_ps1_{kind}'] = from_ps1(ps1[f'{b}{col}'].values, np.nan)
-        for col in ('infoFlag', 'infoFlag2'):
-            cols[f'{b}_ps1_{col}'] = from_ps1(ps1[f'{b}{col}'].fillna(0).values.astype(np.int64), 0)
-        for kind in ('psf_err', 'kron_err'):
-            cols[f'{b}_ps1_{kind}'] = floor_err(cols[f'{b}_ps1_{kind}'])
-        cols[f'{b}_ps1_flux_err'] = floor_flux_err(cols[f'{b}_ps1_flux'], cols[f'{b}_ps1_flux_err'])
-        flux, err = cols[f'{b}_ps1_flux'], cols[f'{b}_ps1_flux_err']
-        cols[f'{b}_ps1_meas'] = np.isfinite(flux) & (err > 0)
-        cols[f'{b}_ps1_snr'] = np.where(cols[f'{b}_ps1_meas'], flux / np.where(err > 0, err, 1.0), np.nan)
-        cols[f'{b}_ps1_nFrames'] = from_ps1(ps1[f'{b}nFrames'].values.astype(float), np.nan).astype(np.float32)
-        cols[f'{b}_ps1_nframes_local'] = np.concatenate([obj[f'{b}_ps1_nframes_local'].values, ps1[f'{b}_nframes_local'].values[ps1_only]]).astype(np.float32)
-        cols[f'{b}_ps1_covered'] = np.concatenate([obj[f'{b}_ps1_covered'].values, np.ones(n_p, bool)])   # a PS1 object: PS1 reaches it
-    return pd.DataFrame(cols, copy=False)
 
 # ----------------------------------------------------------------------------------------------- morphology
 
@@ -1249,14 +1171,12 @@ def field_box(src: pd.DataFrame, pad_deg: float = 0.4) -> Tuple[float, float, fl
 
 
 def prepare_field(field_id: int, data_dir: Optional[str] = None) -> pd.DataFrame:
-    """The parts that do not depend on the photometry choices: the object table with its Gaia match, its PS1 skycell
+    """The parts that do not depend on the photometry choices: the merged table (`load_merged`) with its Gaia match, its PS1 skycell
     (and whether that is one of MAST's bad polar skycells), and its distance to the nearest bright star and to its
     nearest other-survey neighbours."""
     data_dir = data_dir or get_data_path()
-    bands, obj, ps1, matches = load_field(field_id, data_dir)
-    base = object_table(bands, obj, ps1, matches)
+    base = load_merged(field_id, data_dir)
     stars = bright_stars(field_id, data_dir, box=field_box(base))
-    del bands, obj, ps1
     base = annotate_gaia(base, gaia_table(base, f'field{int(field_id):06d}', data_dir, field_id=field_id))
     return annotate_neighbours(annotate_bright_stars(annotate_skycells(base), stars))
 

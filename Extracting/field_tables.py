@@ -9,7 +9,8 @@ Order, per field:
   3. the PS1 stack catalog (`ps1_stack`: our mirror of MAST's stack table, cleaned to one row per object) for the
      partitions under the field, restricted to objects inside some reference image; from the untrimmed partitions, PS1's
      coverage and stack frames around every ZTF and PS1 object (`ps1_neighbourhood`);
-  4. objects matched to PS1 by mutual nearest neighbour at MATCH_ARCSEC, written as a match table of row indices.
+  4. objects matched to PS1 by mutual nearest neighbour at MATCH_ARCSEC (`match_ps1`);
+  5. the merged table (`merge_tables`): every ZTF object with its match, then every unmatched PS1 object.
 Every step works on one homogeneous table; nothing downstream needs to know about quadrants. A table holds only its
 own data and the row indices of the tables it was made from, never anything about tables made from it.
 """
@@ -421,6 +422,65 @@ def ps1_field(field: int, quadrants: Iterable[Tuple[int, int]], data_dir: Option
     return cat[cov.on_image.values].sort_values('PanSTARR_ID').reset_index(drop=True), full
 
 
+# ----------------------------------------------------------------------------------------------- merged table
+
+def merge_tables(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.DataFrame, matches: pd.DataFrame) -> pd.DataFrame:
+    """One row per object: every ZTF object (with its PS1 match, if any) followed by every unmatched PS1 object, both
+    surveys' values side by side as measured or catalogued (no error floor; the filter applies it). Per band, the ZTF
+    values come from the detection's row in `ztf_{b}`, and the image the band is judged in (`{b}_ccd`, `{b}_qid`,
+    `{b}_ztf_nan_dist`, `{b}_ztf_maglim`) is the detection's own, else the covering image `ztf_coverage` chose. The
+    PS1 values come from the PS1 object's band row. -1 / NaN / 0 where a survey has nothing. Columns:
+    docs/object_columns.md."""
+    obj_ps1 = np.full(len(obj), -1); obj_ps1[matches.ztf_obj.values] = matches.ps1.values
+    sep = np.full(len(obj), np.nan); sep[matches.ztf_obj.values] = matches.sep_arcsec.values
+    is_matched = np.zeros(len(ps1), bool); is_matched[matches.ps1.values] = True
+    ps1_only = np.flatnonzero(~is_matched)
+    n_z, n_p = len(obj), len(ps1_only)
+    ps1_idx = np.concatenate([obj_ps1, ps1_only])
+    has_ps1 = ps1_idx >= 0
+    pi = np.where(has_ps1, ps1_idx, 0)
+    from_ps1 = lambda values, fill: np.where(has_ps1, values[pi], fill)
+    cols = {
+        'ra': np.concatenate([obj.ra.values, ps1.ra.values[ps1_only]]),
+        'dec': np.concatenate([obj.dec.values, ps1.dec.values[ps1_only]]),
+        'ztf_idx': np.concatenate([np.arange(n_z), np.full(n_p, -1)]),
+        'ps1_idx': ps1_idx,
+        'match_sep_arcsec': np.concatenate([sep, np.full(n_p, np.nan)]).astype(np.float32),
+        'ps1_ra': from_ps1(ps1.ra.values, np.nan), 'ps1_dec': from_ps1(ps1.dec.values, np.nan),
+        'ps1_objid': from_ps1(ps1.PanSTARR_ID.values.astype(np.int64), -1),
+        'ps1_qualityFlag': from_ps1(ps1.qualityFlag.fillna(0).values.astype(np.int64), 0),
+        'ps1_nStackDetections': from_ps1(ps1.nStackDetections.fillna(0).values.astype(np.int16), 0),
+    }
+    nan_p = np.full(n_p, np.nan)
+    for b in BANDS:
+        cat = bands[b]; zi = obj[f'{b}_idx'].values; det = zi >= 0
+        take = lambda col: np.concatenate([np.where(det, cat[col].values[np.clip(zi, 0, None)], np.nan), nan_p])
+        image = lambda col, obj_col, dtype: np.concatenate([
+            np.where(det, cat[col].values[np.clip(zi, 0, None)], obj[obj_col].values), ps1[obj_col].values[ps1_only]]).astype(dtype)
+        cols.update({
+            f'{b}_ccd': image('ccd', f'{b}_ccd', np.int16), f'{b}_qid': image('qid', f'{b}_qid', np.int8),
+            f'{b}_ztf_covered': np.concatenate([obj[f'{b}_covered'].values, ps1[f'{b}_covered'].values[ps1_only]]),
+            f'{b}_ztf_nan_dist': image('nan_dist_px', f'{b}_nan_dist_px', np.float32),
+            f'{b}_ztf_maglim': image('maglim', f'{b}_maglim', np.float32),
+            f'{b}_ztf_psf': take('mag'), f'{b}_ztf_psf_err': take('magerr'), f'{b}_ztf_snr': take('snr'),
+            f'{b}_ztf_sharp': take('sharp').astype(np.float32), f'{b}_ztf_flags': np.nan_to_num(take('flags'), nan=0).astype(np.int16),
+            f'{b}_ztf_kron': take('zkron'), f'{b}_ztf_kron_err': take('zkron_err'),
+            f'{b}_ztf_kron_masked': take('zkron_masked').astype(np.float32), f'{b}_ztf_kron_rap': take('zkron_rap').astype(np.float32),
+        })
+        cols[f'{b}_ps1_detected'] = from_ps1(ps1[f'{b}_detected'].values.astype(bool), False)
+        for kind, col in (('psf', 'PSFMag'), ('psf_err', 'PSFMagErr'), ('kron', 'KronMag'), ('kron_err', 'KronMagErr'),
+                          ('flux', 'PSFFlux'), ('flux_err', 'PSFFluxErr'), ('kron_rad', 'KronRad'), ('psfQfPerfect', 'psfQfPerfect'), ('sky', 'sky')):
+            cols[f'{b}_ps1_{kind}'] = from_ps1(ps1[f'{b}{col}'].values, np.nan)
+        for col in ('infoFlag', 'infoFlag2'):
+            cols[f'{b}_ps1_{col}'] = from_ps1(ps1[f'{b}{col}'].fillna(0).values.astype(np.int64), 0)
+        cols[f'{b}_ps1_projcell'] = from_ps1(ps1[f'{b}_projcell'].fillna(-1).values.astype(np.int32), -1)
+        cols[f'{b}_ps1_skycell'] = from_ps1(ps1[f'{b}_skycell'].fillna(-1).values.astype(np.int16), -1)
+        cols[f'{b}_ps1_nFrames'] = from_ps1(ps1[f'{b}nFrames'].values.astype(float), np.nan).astype(np.float32)
+        cols[f'{b}_ps1_nframes_local'] = np.concatenate([obj[f'{b}_ps1_nframes_local'].values, ps1[f'{b}_nframes_local'].values[ps1_only]]).astype(np.float32)
+        cols[f'{b}_ps1_covered'] = np.concatenate([obj[f'{b}_ps1_covered'].values, np.ones(n_p, bool)])   # a PS1 object: PS1 reaches it
+    return pd.DataFrame(cols, copy=False)
+
+
 def match_ps1(obj: pd.DataFrame, ps1: pd.DataFrame, radius_arcsec: float = MATCH_ARCSEC) -> pd.DataFrame:
     """The ZTF-PS1 match as its own table, one row per matched pair: `ztf_obj` (row in the ZTF objects table), `ps1`
     (row in the PS1 table), `sep_arcsec`. The two source tables are left as they are."""
@@ -433,9 +493,9 @@ def match_ps1(obj: pd.DataFrame, ps1: pd.DataFrame, radius_arcsec: float = MATCH
 
 def build_field(field: int, quadrants: Sequence[Tuple[int, int]], data_dir: Optional[str] = None, overwrite: bool = False, n_jobs: int = 1,
                 require: Sequence[str] = ()):
-    """Steps 1 to 4 for one field. Writes ztf_<b>.parquet, ztf_objects.parquet, ps1.parquet and matches.parquet under the
-    field directory and returns (bands, objects, ps1, matches). Each table holds only its own data plus the row indices
-    of the tables it was made from (`{b}_idx` on the objects, `ztf_obj` and `ps1` on the matches)."""
+    """Steps 1 to 5 for one field. Writes ztf_<b>.parquet, ztf.parquet, ps1.parquet and merged.parquet under the field
+    directory and returns (bands, ztf, ps1, merged). Each table holds only its own data plus the row indices of the
+    tables it was made from (`{b}_idx` on ztf, `ztf_idx` / `ps1_idx` on merged)."""
     out = field_dir(field, data_dir)
     os.makedirs(out, exist_ok=True)
     bands = {b: field_band(field, quadrants, b, data_dir, n_jobs=n_jobs, overwrite=overwrite, require=require) for b in BANDS}
@@ -445,11 +505,14 @@ def build_field(field: int, quadrants: Sequence[Tuple[int, int]], data_dir: Opti
     obj = object_coverage(obj, field, quadrants, data_dir, n_jobs=n_jobs)
     ps1, ps1_full = ps1_field(field, quadrants, data_dir, n_jobs=n_jobs)
     obj = pd.concat([obj, ps1_neighbourhood(obj.ra.values, obj.dec.values, ps1_full)], axis=1)   # what PS1 has at each ZTF object
-    matches = match_ps1(obj, ps1)
-    obj.to_parquet(os.path.join(out, 'ztf_objects.parquet'))
+    merged = merge_tables(bands, obj, ps1, match_ps1(obj, ps1))
+    obj.to_parquet(os.path.join(out, 'ztf.parquet'))
     ps1.to_parquet(os.path.join(out, 'ps1.parquet'))
-    matches.to_parquet(os.path.join(out, 'matches.parquet'))
-    return bands, obj, ps1, matches
+    merged.to_parquet(os.path.join(out, 'merged.parquet'))
+    for stale in ('ztf_objects.parquet', 'matches.parquet'):                           # the layout before merged.parquet
+        if os.path.exists(os.path.join(out, stale)):
+            os.remove(os.path.join(out, stale))
+    return bands, obj, ps1, merged
 
 
 if __name__ == '__main__':                                 # python -m Extracting.field_tables 860 --n-jobs 8
@@ -462,5 +525,6 @@ if __name__ == '__main__':                                 # python -m Extractin
     a = ap.parse_args()
     quads = field_quadrants(a.field, a.data_dir)
     print(f'field {a.field}: {len(quads)} quadrants', flush=True)
-    bands, obj, ps1, matches = build_field(a.field, quads, a.data_dir, overwrite=a.overwrite, n_jobs=a.n_jobs, require=a.require)
-    print(f'done: ' + ', '.join(f'{b} {len(c):,}' for b, c in bands.items()) + f'; objects {len(obj):,}; PS1 {len(ps1):,}; matched {len(matches):,}', flush=True)
+    bands, obj, ps1, merged = build_field(a.field, quads, a.data_dir, overwrite=a.overwrite, n_jobs=a.n_jobs, require=a.require)
+    print(f'done: ' + ', '.join(f'{b} {len(c):,}' for b, c in bands.items()) + f'; ZTF objects {len(obj):,}; PS1 {len(ps1):,}; '
+          f'matched {int(((merged.ztf_idx >= 0) & (merged.ps1_idx >= 0)).sum()):,}; merged rows {len(merged):,}', flush=True)
