@@ -16,4 +16,4 @@ source "${SLURM_SUBMIT_DIR:-.}/jobs/env.sh"
 if [ -n "${SLURM_ARRAY_TASK_ID:-}" ] && [ -n "${FIELDS:-}" ]; then
     FIELD=$(echo ${FIELDS} | tr ' ' '\n' | sed -n "$((SLURM_ARRAY_TASK_ID + 1))p")
 fi
-python3 -u -m Source_Analysis.filter_field ${FIELD:?set FIELD or FIELDS}
+python3 -u -m Source_Analysis.filter_field run ${FIELD:?set FIELD or FIELDS}

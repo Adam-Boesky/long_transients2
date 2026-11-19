@@ -457,3 +457,19 @@ def test_spike_boxes_mask_along_the_four_position_angles_out_to_the_half_length_
     assert list(out.in_star_spike) == [True, True, True, True, False, False, False]
     assert list(out.bright_star_masked) == [True, True, True, True, False, False, False]
     assert out.bright_star_d_over_R.iloc[0] == pytest.approx(0.8 * L / R, rel=1e-3) and 0.8 * L / R > 1   # along the spike but outside the circle: the box did it
+
+
+def test_outcomes_record_the_first_step_that_dropped_each_band_and_where_the_object_left():
+    src = pd.DataFrame({'ra': [1.0, 2.0, 3.0], 'dec': [0.0, 0.0, 0.0], 'catalog': [0, -1, 0], 'catalog_reason': ['', 'no comparable band', '']})
+    shared = ff.Waterfall('all')
+    shared.add('>= 2 bands: start', {'g': np.array([1, 1, 1], bool), 'r': np.array([1, 1, 1], bool), 'i': np.array([1, 0, 1], bool)})
+    shared.add('quality A', {'g': np.array([1, 0, 1], bool), 'r': np.array([1, 0, 1], bool), 'i': np.array([0, 0, 1], bool)}, 'quality')
+    branch = ff.Waterfall('in_both')
+    branch.add(ff.COMPARABLE, {'g': np.array([1, 0, 1], bool), 'r': np.array([1, 0, 1], bool), 'i': np.array([0, 0, 1], bool)})
+    branch.add('confident B', {'g': np.array([1, 0, 0], bool), 'r': np.array([1, 0, 1], bool), 'i': np.array([0, 0, 1], bool)}, 'confident')
+    branch.add('|σ| step', {'g': np.array([1, 0, 0], bool), 'r': np.array([1, 0, 0], bool), 'i': np.array([0, 0, 0], bool)}, 'interesting')
+    out = ff.annotate_outcomes(src, {'all': shared, 'in_both': branch}, {'in_both': src.iloc[[0]]})
+    assert list(out.outcome) == ['candidate', 'not comparable: no comparable band', 'dropped: |σ| step']
+    assert list(out.g_dropped_by) == [ff.KEPT, 'quality A', 'confident B']
+    assert list(out.i_dropped_by) == ['quality A', '>= 2 bands: start', '|σ| step']
+    assert list(out.r_dropped_by) == [ff.KEPT, 'quality A', '|σ| step']

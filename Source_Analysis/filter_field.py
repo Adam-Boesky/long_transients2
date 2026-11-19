@@ -1209,6 +1209,52 @@ def prepare_field(field_id: int, data_dir: Optional[str] = None) -> pd.DataFrame
     return annotate_neighbours(annotate_bright_stars(annotate_skycells(base), stars))
 
 
+KEPT = 'kept'
+
+
+def annotate_outcomes(src: pd.DataFrame, waterfalls: Dict[str, 'Waterfall'], candidates: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """The record of what happened to every object: `{b}_dropped_by`, the first step that dropped the band (KEPT if
+    none: the shared stage's steps, then its catalog branch's), and `outcome`: 'candidate', 'not comparable: <reason>'
+    for objects that never entered a branch, else 'dropped: <step>' at which fewer than two bands remained."""
+    n = len(src)
+    first = {b: np.full(n, -1, np.int32) for b in BANDS}             # step index of the first drop, per band (-1: kept)
+    labels = []                                                        # index -> label, shared steps then branch steps
+    def walk(wf: 'Waterfall', rows: np.ndarray, offset: int):
+        alive = {b: rows & (first[b] < 0) for b in BANDS}              # a band dropped earlier stays dropped
+        died_at = np.full(n, -1, np.int32)
+        for i in range(len(wf.steps)):
+            m = wf.mask(i)
+            for b in BANDS:
+                newly = alive[b] & ~m[b]
+                first[b][newly] = offset + i
+                alive[b] &= m[b]
+            n_alive = sum(alive[b].astype(int) for b in BANDS)
+            died_at[(died_at < 0) & rows & (n_alive < 2)] = offset + i
+        return died_at
+    all_rows = np.ones(n, bool)
+    labels += waterfalls['all'].steps
+    died_shared = walk(waterfalls['all'], all_rows, 0)
+    died_branch = np.full(n, -1, np.int32)
+    for name, wf in waterfalls.items():
+        if name == 'all':
+            continue
+        rows = src.catalog.values == {v: k for k, v in CATALOG.items()}[wf.catalog]
+        offset = len(labels); labels += wf.steps
+        d = walk(wf, rows, offset)
+        died_branch[rows] = d[rows]
+    is_cand = np.zeros(n, bool)
+    for cand in candidates.values():
+        is_cand[src.index.get_indexer(cand.index)] = True
+    label_of = lambda idx: np.where(idx < 0, KEPT, np.array(labels + [KEPT], dtype=object)[np.where(idx < 0, len(labels), idx)])
+    died = np.where(died_branch >= 0, died_branch, died_shared)
+    reason = np.char.add('not comparable: ', src.catalog_reason.astype(str).values.astype(str))
+    dropped = np.char.add('dropped: ', label_of(died).astype(str))
+    outcome = np.where(is_cand, 'candidate', np.where(src.catalog.values < 0, reason, dropped))
+    cols = {f'{b}_dropped_by': pd.Categorical(label_of(first[b])) for b in BANDS}
+    cols['outcome'] = pd.Categorical(outcome)
+    return _attach(src, cols)
+
+
 def filter_prepared(base: pd.DataFrame, cuts: Cuts = Cuts(), verbose: bool = True):
     """Catalogs, the shared quality stage, the three branches up to the |sigma| cut, the envelopes from the two-sided
     bands that reach it, then sigma, the |sigma| cut and the `snr_keep` step, on a `prepare_field` table (left
@@ -1230,6 +1276,10 @@ def filter_prepared(base: pd.DataFrame, cuts: Cuts = Cuts(), verbose: bool = Tru
         if verbose: print(f'Filtering {wf.catalog}')
         candidates[wf.catalog] = judge_bands(src, wf, reach, cuts)
         waterfalls[wf.catalog] = wf
+    src = annotate_outcomes(src, waterfalls, candidates)
+    for name, cand in candidates.items():                  # the record rides with the candidates (what the site gets)
+        for c in [f'{b}_dropped_by' for b in BANDS] + ['outcome']:
+            cand[c] = src[c].values[src.index.get_indexer(cand.index)]
     return src, envelopes, candidates, waterfalls
 
 
@@ -1268,12 +1318,45 @@ def _box_width_for_text(text: str, fontsize: float = 12.5, inches_per_unit: floa
     return max(3.0, text_units + padding)
 
 
-if __name__ == '__main__':                                 # python -m Source_Analysis.filter_field 860 [--data-dir Data]
+EXPLAIN_COLS = (['ra', 'dec', 'ztf_idx', 'ps1_idx', 'catalog', 'catalog_reason', 'outcome', 'g_point']
+                + [f'{b}_{c}' for b in BANDS for c in ('ztf_status', 'ps1_status', 'ztf_psf', 'ps1_psf', 'ztf_snr', 'ps1_snr', 'sigma', 'dropped_by')])
+
+
+def explain(field_id: int, ra: float, dec: float, data_dir: Optional[str] = None, max_arcsec: float = 2.0) -> Optional[pd.Series]:
+    """What the last filter run did with the object nearest (ra, dec): its statuses, magnitudes, catalog, the step that
+    dropped each band and its outcome, read from the saved object table; None if nothing lies within `max_arcsec`."""
+    path = os.path.join(field_dir(field_id, data_dir or get_data_path()), 'filter', 'objects.parquet')
+    t = pd.read_parquet(path, columns=EXPLAIN_COLS)
+    sep = SkyCoord(t.ra.values * u.deg, t.dec.values * u.deg).separation(SkyCoord(ra * u.deg, dec * u.deg)).arcsec
+    i = int(np.argmin(sep))
+    if sep[i] > max_arcsec:
+        print(f'field {field_id}: no object within {max_arcsec}" of ({ra:.5f}, {dec:.5f}); nearest is {sep[i]:.1f}" away')
+        return None
+    r = t.iloc[i]
+    cat = {**CATALOG, -1: NOT_COMPARABLE}[int(r.catalog)]
+    fmt = lambda v: f'{v:.2f}' if np.isfinite(v) else '-'
+    print(f'field {field_id}: object {sep[i]:.2f}" from ({ra:.5f}, {dec:.5f})  ztf_idx {r.ztf_idx}  ps1_idx {r.ps1_idx}  '
+          f'{"point" if r.g_point else "extended"}  catalog: {cat} ({r.catalog_reason})')
+    for b in BANDS:
+        print(f'  {b}: ZTF {r[f"{b}_ztf_status"]} {fmt(r[f"{b}_ztf_psf"])} (S/N {fmt(r[f"{b}_ztf_snr"])}) | PS1 {r[f"{b}_ps1_status"]} {fmt(r[f"{b}_ps1_psf"])} '
+              f'(S/N {fmt(r[f"{b}_ps1_snr"])}) | sigma {fmt(r[f"{b}_sigma"])} | {r[f"{b}_dropped_by"]}')
+    print(f'  outcome: {r.outcome}')
+    return r
+
+
+if __name__ == '__main__':
     import argparse
-    ap = argparse.ArgumentParser(description='Filter one field; writes objects, candidates, stats and envelopes under <data>/fields/<field>/filter/.')
-    ap.add_argument('field', type=int)
-    ap.add_argument('--data-dir', default=None)
-    ap.add_argument('--snr-keep', type=float, default=None, help='also apply the measured-sides S/N step at this value')
+    ap = argparse.ArgumentParser(description='Filter a field, or explain what the last run did with one object.')
+    sub = ap.add_subparsers(dest='cmd', required=True)
+    r = sub.add_parser('run', help='filter one field; writes objects, candidates, stats and envelopes under <data>/fields/<field>/filter/')
+    r.add_argument('field', type=int); r.add_argument('--data-dir', default=None)
+    r.add_argument('--snr-keep', type=float, default=None, help='also apply the measured-sides S/N step at this value')
+    e = sub.add_parser('explain', help='the object nearest a position: statuses, magnitudes, the step that dropped each band, outcome')
+    e.add_argument('field', type=int); e.add_argument('ra', type=float); e.add_argument('dec', type=float)
+    e.add_argument('--data-dir', default=None); e.add_argument('--max-arcsec', type=float, default=2.0)
     a = ap.parse_args()
-    _src, _env, _cands, _wfs = filter_field(a.field, a.data_dir, Cuts(snr_keep=a.snr_keep), save=True, verbose=True)
-    print('candidates:', {k: len(v) for k, v in _cands.items()}, flush=True)
+    if a.cmd == 'run':
+        _src, _env, _cands, _wfs = filter_field(a.field, a.data_dir, Cuts(snr_keep=a.snr_keep), save=True, verbose=True)
+        print('candidates:', {k: len(v) for k, v in _cands.items()}, flush=True)
+    else:
+        explain(a.field, a.ra, a.dec, a.data_dir, a.max_arcsec)
