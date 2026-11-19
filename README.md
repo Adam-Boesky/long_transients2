@@ -7,46 +7,13 @@ flowchart TD
     IN["<b>Input</b><br/>one row per object: ZTF detections in g, r, i (DAOPhot + our Kron photometry)<br/>+ the matched PS1 stack object, or a PS1-only object"]
     Q["<b>1 · Quality</b> — per band, per survey<br/>is the data here usable?<br/><i>usable, or X</i>"]
     D["<b>2 · Detection</b> — per band, per usable side<br/>what does the survey have?<br/><i>D measured at S/N ≥ 5 · L measured below · U nothing: its limit stands in</i>"]
-    S["<b>3 · Comparison and sorting</b><br/>per band: (D, D) two-sided · (D, L/U) ZTF vs PS1 limit · (L/U, D) PS1 vs ZTF limit · an X or (L/U, L/U): nothing<br/>per object: ≥ 2 bands of one kind → that catalog, else not comparable (with the reason)"]
-    NC["not comparable"]
-    IN --> Q --> D --> S
-    S -- no --> NC
-
-    subgraph BOTH ["in_both — ZTF vs PS1"]
-        direction TB
-        B4["<b>4 · Confident</b><br/>bright-star mask · sharpness (point sources)<br/>PS1 nStackDetections ≥ 2, not BAD_STACK, not SUSPECT_STACK"]
-        B5["<b>5 · Population</b><br/>no Gaia proper motion or parallax at 5σ"]
-        B7["<b>7 · Interesting</b><br/>σ from the envelope, either sign<br/>|σ| > 3 in ≥ 2 bands, ≥ 2 the same sign"]
-        B8["in_both candidates"]
-        B4 --> B5 --> B7 --> B8
-    end
-    subgraph ZTF ["in_ztf — ZTF vs the PS1 limit"]
-        direction TB
-        Z4["<b>4 · Confident</b><br/>bright-star mask · sharpness (point sources)<br/>no object within 3″ · outside brighter objects' Kron apertures"]
-        Z5["<b>5 · Population</b><br/>no Gaia proper motion or parallax at 5σ"]
-        Z7["<b>7 · Interesting</b><br/>σ against the PS1 limit, ZTF brighter only<br/>|σ| > 3 in ≥ 2 bands"]
-        Z8["in_ztf candidates"]
-        Z4 --> Z5 --> Z7 --> Z8
-    end
-    subgraph PS1 ["in_pstarr — PS1 vs the ZTF limit"]
-        direction TB
-        P4["<b>4 · Confident</b><br/>bright-star mask · sharpness (point sources)<br/>no object within 3″ · outside brighter objects' Kron apertures<br/>PS1 nStackDetections ≥ 2, not BAD_STACK, not SUSPECT_STACK"]
-        P5["<b>5 · Population</b><br/>no Gaia proper motion or parallax at 5σ"]
-        P7["<b>7 · Interesting</b><br/>σ against the ZTF limit, PS1 brighter only<br/>|σ| > 3 in ≥ 2 bands"]
-        P8["in_pstarr candidates"]
-        P4 --> P5 --> P7 --> P8
-    end
-    S -- two-sided --> B4
-    S -- ZTF vs limit --> Z4
-    S -- PS1 vs limit --> P4
-
-    CAL["<b>6 · Calibrate</b> — once, from what survives 4 and 5 in every track<br/>each survey's 90 % recovery limit per quadrant, PSF and Kron<br/>the Δmag envelope from the two-sided bands"]
-    B5 -.-> CAL
-    Z5 -.-> CAL
-    P5 -.-> CAL
-    CAL -.-> B7
-    CAL -.-> Z7
-    CAL -.-> P7
+    S["<b>3 · Comparison and sorting</b><br/>per band: (D, D) two-sided · (D, L/U) ZTF vs PS1 limit · (L/U, D) PS1 vs ZTF limit · an X or (L/U, L/U): nothing<br/>per object: ≥ 2 bands of one kind → <b>in_both</b> / <b>in_ztf</b> / <b>in_pstarr</b>, else not comparable (with the reason)"]
+    CONF["<b>4 · Confident</b> — is it one real object?<br/>bright-star mask · sharpness (point sources)<br/>in_ztf, in_pstarr: no object within 3″, outside brighter objects' Kron apertures<br/>in_both, in_pstarr: PS1 nStackDetections ≥ 2, not BAD_STACK, not SUSPECT_STACK"]
+    POP["<b>5 · Population</b> — not Galactic<br/>no Gaia proper motion or parallax at 5σ"]
+    CAL["<b>6 · Calibrate</b> on what is left<br/>each survey's 90 % recovery limit per quadrant, PSF and Kron · the Δmag envelope from the two-sided bands"]
+    INT["<b>7 · Interesting</b><br/>σ from the envelope: either sign for in_both, ZTF brighter only for in_ztf, PS1 brighter only for in_pstarr<br/>|σ| > 3 in ≥ 2 bands, ≥ 2 of them the same sign"]
+    OUT["<b>candidates</b>: in_both · in_ztf · in_pstarr"]
+    IN --> Q --> D --> S --> CONF --> POP --> CAL --> INT --> OUT
 ```
 
 Every band of every object ends step 3 with one of these on each survey's side:
