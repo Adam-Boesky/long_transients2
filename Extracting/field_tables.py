@@ -126,7 +126,6 @@ def band_catalog(field: int, ccd: int, qid: int, band: str, data_dir: Optional[s
     cat['mag'] += magzp                                   # refpsfcat magnitudes are instrumental; MAGZP calibrates them (Supplement section 7.3)
     cat['magzp'] = magzp
     cat['ccd'], cat['qid'] = int(ccd), int(qid)
-    cat['edge_px'] = np.minimum.reduce([cat.x.values, cat.y.values, REF_SIZE_PX - cat.x.values, REF_SIZE_PX - cat.y.values])
     im = load_refimg(refimg_path(ztf_dir, field, ccd, qid, band), unc_path=_optional(refimg_path(ztf_dir, field, ccd, qid, band, 'refunc')),
                          cov_path=_optional(refimg_path(ztf_dir, field, ccd, qid, band, 'refcov')))
     if abs(im.zero_point - magzp) > 1e-6 or im.header.get('NMATCHES') != hdul_nmatches:   # the deep references are rebuilt on a rolling basis
@@ -157,6 +156,7 @@ def dedupe_band(cat: pd.DataFrame, radius_arcsec: float = MATCH_ARCSEC) -> pd.Da
     for _ in range(3):
         rows = np.flatnonzero(keep)
         sub = cat.iloc[rows]
+        edge = np.minimum.reduce([sub.x.values, sub.y.values, REF_SIZE_PX - sub.x.values, REF_SIZE_PX - sub.y.values])   # px to the image edge
         p = _xyz(sub.ra.values, sub.dec.values)
         tree = cKDTree(p)
         pairs = tree.query_pairs(_chord(radius_arcsec), output_type='ndarray')
@@ -174,7 +174,7 @@ def dedupe_band(cat: pd.DataFrame, radius_arcsec: float = MATCH_ARCSEC) -> pd.Da
             if seen[a] or seen[b]:
                 continue
             seen[a] = seen[b] = True
-            drop.append(b if sub.edge_px.values[a] >= sub.edge_px.values[b] else a)
+            drop.append(b if edge[a] >= edge[b] else a)
         keep[rows[np.array(drop)]] = False
     out = cat[keep].reset_index(drop=True)
     out['n_duplicates_dropped'] = int((~keep).sum())

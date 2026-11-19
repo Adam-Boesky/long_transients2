@@ -3,7 +3,7 @@
 Per field, under `Data/fields/<field>/`. Builder (`Extracting/field_tables.py`): `ztf_{b}`, `ztf_objects`, `ps1`,
 `matches`. Filter (`Source_Analysis/filter_field.py`): `filter/objects`, `filter/<catalog>_candidates`. `{b}` is g, r
 or i. **N** marks a survey-native value (source in brackets); everything else is ours. A table holds its own data plus
-row indices of its parents, never anything about tables made from it.
+row indices of its parents, never anything about tables made from it, and no column that only restates another.
 
 ## `ztf_{b}`: one row per DAOPhot source (`band_catalog`, `dedupe_band`)
 
@@ -13,7 +13,7 @@ row indices of its parents, never anything about tables made from it.
 | `mag`, `magerr`, `snr`, `chi`, `sharp`, `flags` | N (`refpsfcat`; `mag` + header MAGZP) |
 | `magzp`, `maglim` | N (refpsfcat MAGZP, refimg MAGLIM) |
 | `ccd`, `qid` | quadrant measured in |
-| `edge_px`, `nan_dist_px` | px to the image edge, to the nearest masked pixel |
+| `nan_dist_px` | px to the nearest masked pixel |
 | `zkron`, `zkron_err` | our Kron magnitude (`kron`) |
 | `zkron_r1`, `zkron_rap`, `zkron_sky` | Kron radius R1, aperture 2.5 R1, sky radius; arcsec |
 | `zkron_flag` | bits: 1 no radius, 2 floor, 4 faint cap, 8 truncated, 16 flux ≤ 0; −1 not measured |
@@ -54,30 +54,43 @@ row indices of its parents, never anything about tables made from it.
 | `ztf_obj`, `ps1` | rows in `ztf_objects`, `ps1` |
 | `sep_arcsec` | separation |
 
-## `filter/objects`: one row per ZTF object, then per unmatched PS1 object
+## PROPOSED `merged`: one row per object (builder, `merge_tables`) — for review, not implemented
 
-Errors and S/N carry a 0.01 mag floor (`floor_err`).
-
-**Assembled** (`object_table`)
+Every ZTF object with its PS1 match, then every unmatched PS1 object; the filter would read this instead of joining the
+four tables above. Values as measured or catalogued: no error floor (the filter applies it on load). −1 / NaN / 0
+where a survey has nothing.
 
 | column | meaning |
 |---|---|
-| `ra`, `dec` | ZTF position; PS1 position for PS1-only rows |
+| `ra`, `dec` | ZTF object position; PS1 position for PS1-only rows |
 | `ztf_idx`, `ps1_idx` | rows in `ztf_objects`, `ps1` (−1 none) |
+| `match_sep_arcsec` | ZTF–PS1 separation (from `matches`; NaN unmatched) |
 | `ps1_ra`, `ps1_dec` | the PS1 object's position |
 | `ps1_objid`, `ps1_qualityFlag`, `ps1_nStackDetections` | N (`objID`, `qualityFlag`, `nStackDetections`) |
+| `{b}_ztf_psf`, `{b}_ztf_psf_err`, `{b}_ztf_snr`, `{b}_ztf_sharp`, `{b}_ztf_flags` | N (DAOPhot `mag`, `sigmag`, `snr`, `sharp`, `flags`) |
+| `{b}_ztf_kron`, `{b}_ztf_kron_err`, `{b}_ztf_kron_masked`, `{b}_ztf_kron_rap` | our Kron magnitude, error, masked fraction, aperture radius |
 | `{b}_ccd`, `{b}_qid` | image the band is judged in: the detection's, else the chosen covering one |
-| `{b}_ztf_det` | DAOPhot detection in b |
-| `{b}_ztf_psf`, `{b}_ztf_psf_err`, `{b}_ztf_snr`, `{b}_ztf_sharp`, `{b}_ztf_flags` | N (from `ztf_{b}`) |
-| `{b}_ztf_kron`, `{b}_ztf_kron_err`, `{b}_ztf_kron_masked`, `{b}_ztf_kron_rap` | our Kron (from `ztf_{b}`) |
-| `{b}_ztf_nan_dist`, `{b}_ztf_maglim` | the band image's px to a mask, MAGLIM |
+| `{b}_ztf_nan_dist`, `{b}_ztf_maglim` | that image's px to a mask, MAGLIM |
 | `{b}_ztf_covered` | on a valid pixel of some b image |
-| `{b}_ps1_psf`, `{b}_ps1_kron`, `{b}_ps1_psf_err`, `{b}_ps1_kron_err`, `{b}_ps1_flux`, `{b}_ps1_flux_err` | N (`PSFMag`, `KronMag`, errors, `PSFFlux` and error) |
-| `{b}_ps1_kron_rad`, `{b}_ps1_psfQfPerfect`, `{b}_ps1_sky`, `{b}_ps1_infoFlag`, `{b}_ps1_infoFlag2`, `{b}_ps1_nFrames` | N |
-| `{b}_ps1_projcell`, `{b}_ps1_skycell` | N (the band row's skycell; −1 none) |
-| `{b}_ps1_detected` | from `ps1.{b}_detected` |
+| `{b}_ps1_covered`, `{b}_ps1_nframes_local` | PS1 measured something in b within 1′; median nFrames of the 5 nearest PS1 objects |
+| `{b}_ps1_detected` | not forced photometry |
+| `{b}_ps1_psf`, `{b}_ps1_psf_err`, `{b}_ps1_kron`, `{b}_ps1_kron_err`, `{b}_ps1_flux`, `{b}_ps1_flux_err` | N (`PSFMag`, `PSFMagErr`, `KronMag`, `KronMagErr`, `PSFFlux`, `PSFFluxErr`) |
+| `{b}_ps1_kron_rad`, `{b}_ps1_psfQfPerfect`, `{b}_ps1_sky`, `{b}_ps1_nFrames`, `{b}_ps1_infoFlag`, `{b}_ps1_infoFlag2` | N |
+| `{b}_ps1_projcell`, `{b}_ps1_skycell` | N (the band row's skycell) |
+
+Open choices: (1) only the columns the filter reads (above), or every column of `ztf_{b}` and `ps1`; (2) keep
+`match_sep_arcsec` (new).
+
+## `filter/objects`: one row per ZTF object, then per unmatched PS1 object
+
+Assembled by `object_table` from the four builder tables, then annotated. Errors and S/N carry a 0.01 mag floor
+(`floor_err`).
+
+**Assembled** (`object_table`): every column of the proposed `merged` above except `match_sep_arcsec`, plus
+
+| column | meaning |
+|---|---|
 | `{b}_ps1_meas`, `{b}_ps1_snr` | finite flux with error > 0 (forced included); flux / error |
-| `{b}_ps1_covered`, `{b}_ps1_nframes_local` | from `ztf_objects` / `ps1` |
 
 **Annotations**
 
@@ -103,7 +116,7 @@ Errors and S/N carry a 0.01 mag floor (`floor_err`).
 | `point_source` | not extended in ≥ 2 measured bands |
 | `{b}_use_psf` | compares PSF (else Kron) |
 | `{b}_ztf_use_meas`, `{b}_ps1_use_forced` | a limit side uses its own sub-threshold measurement |
-| `{b}_dmag`, `{b}_sigma` | ZTF − PS1 of the compared magnitudes (`compared_magnitudes`); σ against the envelope |
+| `{b}_dmag`, `{b}_sigma` | ZTF − PS1 of the compared magnitudes; σ against the envelope |
 
 **Outcome** (`annotate_outcomes`)
 
@@ -112,8 +125,9 @@ Errors and S/N carry a 0.01 mag floor (`floor_err`).
 | `{b}_dropped_by` | first step that dropped the band, or `kept` |
 | `outcome` | `candidate`, `not comparable: <reason>`, or `dropped: <step>` |
 
-Derived in the filter, not stored: compared magnitudes (`compared_magnitudes`), PS1 depth (`ps1_depth`), polar-skycell
-badness (`ps1_skycell_bad`), the bright-star mask (`bright_star_masked`), Gaia significances (`gaia_population_ok`).
+Derived in the filter, not stored: ZTF detection (`ztf_detected`), compared magnitudes (`compared_magnitudes`), PS1
+depth (`ps1_depth`), polar-skycell badness (`ps1_skycell_bad`), the bright-star mask (`bright_star_masked`), Gaia
+significances (`gaia_population_ok`).
 
 ## `filter/<catalog>_candidates`
 
