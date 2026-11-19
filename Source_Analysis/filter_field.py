@@ -95,6 +95,7 @@ PSF_KRON_NSIGMA = 3.0           # extended if the combined excess over the cut e
 KRON_MAX_MASKED = 0.10          # ZTF Kron aperture fraction masked (neighbours' basins, bad pixels) above which Kron is contaminated
 NAN_RADIUS_PX = 5               # a ZTF measurement or limit this close to a masked ZTF pixel is untrustworthy
 GAIA_MATCH_ARCSEC = 5.0
+GAIA_NSIGMA = 5.0               # proper motion or parallax at this significance: a Galactic star
 GAIA_OBS_EPOCH = 2021.0
 BAD_STACK, SUSPECT_STACK = 128, 64                        # qualityFlag
 DEFECT, PEAK_ON_SPIKE, SATSTAR = 2048, 1 << 29, 128        # infoFlag
@@ -258,7 +259,7 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
     covering image `field_tables.ztf_coverage` chose: on valid pixels, clean, deepest), with `{b}_ztf_covered`,
     `{b}_ztf_nan_dist` (distance to its nearest masked pixel) and `{b}_ztf_maglim` (its nominal depth); `{b}_ztf_det`,
     `{b}_ztf_psf/_err` (DAOPhot), `{b}_ztf_kron/_err` (our Kron), `{b}_ztf_kron_masked`, `{b}_ztf_kron_rap` (our Kron
-    aperture radius, "), `{b}_ztf_snr`, `{b}_ztf_chi`, `{b}_ztf_sharp`, `{b}_ztf_flags`; `{b}_ps1_detected` (a PS1
+    aperture radius, "), `{b}_ztf_snr`, `{b}_ztf_sharp`, `{b}_ztf_flags`; `{b}_ps1_detected` (a PS1
     detection, not forced photometry), `{b}_ps1_psf/_err`, `{b}_ps1_kron/_err`,
     `{b}_ps1_flux/_err`, `{b}_ps1_kron_rad` (PS1's Kron aperture radius, "), `{b}_ps1_snr` (flux / error), `{b}_ps1_meas` (a flux with a positive error, forced included),
     `{b}_ps1_infoFlag`, `{b}_ps1_infoFlag2` (0 without a PS1 object), `{b}_ps1_psfQfPerfect`, `{b}_ps1_sky` (residual
@@ -308,7 +309,7 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
             f'{b}_ztf_kron': take('zkron'), f'{b}_ztf_kron_err': floor_err(take('zkron_err')),
             f'{b}_ztf_kron_masked': take('zkron_masked').astype(np.float32),
             f'{b}_ztf_kron_rap': take('zkron_rap').astype(np.float32),
-            f'{b}_ztf_snr': floor_snr(take('snr')), f'{b}_ztf_chi': take('chi').astype(np.float32), f'{b}_ztf_sharp': take('sharp').astype(np.float32),
+            f'{b}_ztf_snr': floor_snr(take('snr')), f'{b}_ztf_sharp': take('sharp').astype(np.float32),
             f'{b}_ztf_flags': np.nan_to_num(take('flags'), nan=0).astype(np.int16),
         })
         cols[f'{b}_ps1_detected'] = from_ps1(ps1[f'{b}_detected'].values.astype(bool), False)
@@ -463,7 +464,8 @@ def completeness_references(src: pd.DataFrame, cuts: Cuts = Cuts()) -> Tuple[Dic
     mask = ~src.bright_star_masked.values if cuts.bright_star_mask else np.ones(len(src), bool)
     isolated = ~(src.nearest_other_arcsec.values <= cuts.isolation_arcsec) if cuts.isolation_arcsec is not None else np.ones(len(src), bool)
     clear_of_kron = ~src.inside_brighter_kron.values if cuts.neighbour_kron else np.ones(len(src), bool)
-    population_ok = ~(src.gaia_pm_sig.values >= 5.0) & ~(src.gaia_parallax_over_error.values >= 5.0)
+    pm_ok, plx_ok = gaia_population_ok(src)
+    population_ok = pm_ok & plx_ok
     position_ok = mask & isolated & clear_of_kron & population_ok & ~src.ps1_skycell_bad.values   # no PS1 data to recover with, or to be recovered
     z_sharp_ok = ~sharpness_fails(src, point, cuts)
     z_trust = {b: _passes(ztf_checks(src, b, point)) & src[f'{b}_ztf_det'].values & (src[f'{b}_ztf_snr'].values >= SNR_MIN) for b in BANDS}
@@ -508,8 +510,8 @@ def completeness_limits(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
 
 
 def assign_catalogs(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
-    """`catalog` per object; per band `{b}_ztf_status`, `{b}_ps1_status`, `{b}_cat` (the comparison), `{b}_point`,
-    `{b}_extendedness`, `{b}_kron_contaminated`, `{b}_use_kron` and the magnitudes that enter dmag, `{b}_ztf_use/_err`
+    """`catalog` per object; per band `{b}_ztf_status`, `{b}_ps1_status`, `{b}_cat` (the comparison), `point_source`
+    (one morphology per object), `{b}_extendedness`, `{b}_use_kron` and the magnitudes that enter dmag, `{b}_ztf_use/_err`
     and `{b}_ps1_use/_err`; `catalog` and `catalog_reason` from `object_catalog`. An in_both object keeps only its
     two-sided bands (`{b}_cat` 0); its one-sided bands are dropped (-1), as is every band of an object that is not
     comparable. On the undetected side of a one-sided band, either survey uses its own sub-threshold measurement
@@ -526,7 +528,7 @@ def assign_catalogs(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
     raw = {b: comparison(z, p) for b, (z, p) in status.items()}
     n_measured = sum((src[f'{b}_ztf_det'].values | src[f'{b}_ps1_meas'].values).astype(int) for b in BANDS)
     catalog, reason = object_catalog(raw, n_measured)
-    cols = {'catalog': catalog, 'catalog_reason': reason}
+    cols = {'catalog': catalog, 'catalog_reason': reason, 'point_source': point}
     for b, (z, p) in status.items():
         cat = raw[b].copy()
         cat[(catalog == 0) & (cat > 0)] = -1                  # in_both: two-sided bands only
@@ -543,8 +545,7 @@ def assign_catalogs(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
         z_meas = (cat == 2) & (z == 'L') & np.isfinite(z_mag) & (z_mag < z_limit)
         cols.update({
             f'{b}_ztf_status': z, f'{b}_ps1_status': p, f'{b}_cat': cat,
-            f'{b}_extendedness': extendedness(src, b), f'{b}_point': point,
-            f'{b}_kron_contaminated': src[f'{b}_ztf_det'].values & ~point & ~(src[f'{b}_ztf_kron_masked'].values <= KRON_MAX_MASKED),
+            f'{b}_extendedness': extendedness(src, b),
             f'{b}_use_kron': use_kron, f'{b}_ztf_limit': z_limit, f'{b}_ps1_limit': limit,
             f'{b}_ztf_use': np.where(cat == 2, np.where(z_meas, z_mag, z_limit), z_mag),
             f'{b}_ztf_use_err': np.where(cat == 2, np.where(z_meas, z_err, 0.0), z_err),
@@ -741,7 +742,8 @@ def kde_envelopes(tabs: Dict[str, Table], mag_grid: np.ndarray = np.arange(16, 2
 
 
 def annotate_sigma(src: pd.DataFrame, envelopes: Dict[str, Envelope_KDE]) -> pd.DataFrame:
-    """`{b}_dmag`, `{b}_sigma` (ZTF brighter = negative) and `{b}_capped` for every row with a usable band. A limit
+    """`{b}_dmag` and `{b}_sigma` (ZTF brighter = negative; ±SIGMA_CAP beyond what the grid resolves) for every row
+    with a usable band. A limit
     bounds one direction only: against the PS1 limit (PS1 at least that faint) a band can only have brightened, so
     sigma is clipped at 0 from above, and against the ZTF limit only faded, clipped from below; a sub-threshold
     measurement standing in for a limit is a measurement and stays two-sided."""
@@ -755,7 +757,7 @@ def annotate_sigma(src: pd.DataFrame, envelopes: Dict[str, Envelope_KDE]) -> pd.
         against_ztf_limit = (cat == 2) & ~src[f'{b}_ztf_use_meas'].values
         sigma = np.where(against_ps1_limit, np.fmin(sigma, 0.0), np.where(against_ztf_limit, np.fmax(sigma, 0.0), sigma))
         sigma[(cat < 0) | ~(p > 14.0)] = np.nan
-        cols.update({f'{b}_dmag': dmag, f'{b}_sigma': sigma, f'{b}_capped': capped & np.isfinite(sigma)})
+        cols.update({f'{b}_dmag': dmag, f'{b}_sigma': sigma})
     return _attach(src, cols)
 
 
@@ -824,17 +826,34 @@ def gaia_table(src: pd.DataFrame, name: str, data_dir: Optional[str] = None, pad
 
 
 def annotate_gaia(src: pd.DataFrame, gaia: pd.DataFrame, max_arcsec: float = GAIA_MATCH_ARCSEC) -> pd.DataFrame:
-    """Nearest Gaia source within `max_arcsec`, positions propagated to GAIA_OBS_EPOCH: `gaia_sep_arcsec`, `gaia_pm_sig`
-    (pm / (pmra_error + pmdec_error), the old pipeline's definition: the errors summed, not in quadrature) and
-    `gaia_parallax_over_error` (NaN without a match or without that quantity)."""
+    """Nearest Gaia DR3 source within `max_arcsec`, positions propagated to GAIA_OBS_EPOCH: `gaia_sep_arcsec`,
+    `gaia_pm`, `gaia_pmra`, `gaia_pmdec`, `gaia_pmra_err`, `gaia_pmdec_err` (mas/yr) and `gaia_parallax_over_error` (the
+    Gaia cache holds the ratio, not the parallax); NaN without a match or without that quantity. The significances
+    the population cut uses are computed from these (`gaia_pm_significance`)."""
     coords = SkyCoord(gaia.ra.values * u.deg, gaia.dec.values * u.deg,
                       pm_ra_cosdec=np.nan_to_num(gaia.pmra.values) * u.mas / u.yr, pm_dec=np.nan_to_num(gaia.pmdec.values) * u.mas / u.yr,
                       obstime=Time(gaia.ref_epoch.values, format='jyear')).apply_space_motion(new_obstime=Time(GAIA_OBS_EPOCH, format='jyear'))
     idx, sep, _ = match_coordinates_sky(SkyCoord(src.ra.values * u.deg, src.dec.values * u.deg), coords)
     ok = sep.arcsec <= max_arcsec
-    pm_sig = (gaia.pm / (gaia.pmra_error + gaia.pmdec_error)).values[idx]
-    return _attach(src, {'gaia_sep_arcsec': np.where(ok, sep.arcsec, np.nan), 'gaia_pm_sig': np.where(ok, pm_sig, np.nan),
-                         'gaia_parallax_over_error': np.where(ok, gaia.parallax_over_error.values[idx], np.nan)})
+    take = lambda col: np.where(ok, gaia[col].values[idx], np.nan).astype(np.float32)
+    return _attach(src, {'gaia_sep_arcsec': np.where(ok, sep.arcsec, np.nan).astype(np.float32),
+                         'gaia_pm': take('pm'), 'gaia_pmra': take('pmra'), 'gaia_pmdec': take('pmdec'),
+                         'gaia_pmra_err': take('pmra_error'), 'gaia_pmdec_err': take('pmdec_error'),
+                         'gaia_parallax_over_error': take('parallax_over_error')})
+
+
+def gaia_pm_significance(src: pd.DataFrame) -> np.ndarray:
+    """Total proper motion over its error, the errors of the two components propagated in quadrature:
+    sigma_pm = sqrt((pmra sigma_pmra)^2 + (pmdec sigma_pmdec)^2) / pm. NaN without a Gaia match."""
+    pmra, pmdec = src.gaia_pmra.values.astype(float), src.gaia_pmdec.values.astype(float)
+    err = np.hypot(pmra * src.gaia_pmra_err.values, pmdec * src.gaia_pmdec_err.values) / np.hypot(pmra, pmdec)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return np.hypot(pmra, pmdec) / err
+
+
+def gaia_population_ok(src: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+    """(no proper motion at GAIA_NSIGMA, no parallax at GAIA_NSIGMA); True without a Gaia match."""
+    return ~(gaia_pm_significance(src) >= GAIA_NSIGMA), ~(src.gaia_parallax_over_error.values >= GAIA_NSIGMA)
 
 
 # ----------------------------------------------------------------------------------------------- bright stars
@@ -1057,7 +1076,7 @@ def real_checks(src: pd.DataFrame, catalog: int, cuts: Cuts = Cuts()) -> List[Tu
         checks.append(("outside every brighter object's Kron aperture", ~src.inside_brighter_kron.values))
     if sharp_max is not None:
         label = f'ZTF: S/N²-weighted |sharp| <= {sharp_max}' + (' (point sources)' if cuts.sharp_point_only else '')
-        checks.append((label, ~sharpness_fails(src, src.g_point.values, cuts)))
+        checks.append((label, ~sharpness_fails(src, src.point_source.values, cuts)))
     if catalog in (0, 2):                                                  # PS1's own verdict on its detections of the object,
         checks.append((f'PS1: nStackDetections >= {PS1_MIN_STACK_DETECTIONS}',   # wherever its side is a measurement
                        src.ps1_nStackDetections.values >= PS1_MIN_STACK_DETECTIONS))
@@ -1100,7 +1119,7 @@ def quality_waterfall(src: pd.DataFrame, cuts: Cuts = Cuts()) -> Waterfall:
     fewer than two bands remain."""
     wf = Waterfall('all')
     m = {b: np.ones(len(src), bool) for b in BANDS}
-    for i, (group, label, passes) in enumerate(quality_steps(src, src['g_point'].values, cuts)):
+    for i, (group, label, passes) in enumerate(quality_steps(src, src.point_source.values, cuts)):
         for b in BANDS:
             m[b] &= passes[b]
         alive = sum(m[b].astype(int) for b in BANDS) >= 2
@@ -1130,9 +1149,10 @@ def cut_bands(src: pd.DataFrame, catalog: int, cuts: Cuts = Cuts()) -> Tuple[Wat
             m[b] &= alive
         wf.add(label, m, 'confident')
     keep = alive.copy()
-    keep &= ~(src['gaia_pm_sig'].values >= 5.0)
+    pm_ok, plx_ok = gaia_population_ok(src)
+    keep &= pm_ok
     wf.add('Gaia: no proper motion at 5σ', {b: keep & m[b] for b in BANDS}, 'population')
-    keep &= ~(src['gaia_parallax_over_error'].values >= 5.0)
+    keep &= plx_ok
     wf.add('Gaia: no parallax at 5σ', {b: keep & m[b] for b in BANDS}, 'population')
     return wf, {b: keep & m[b] for b in BANDS}
 
@@ -1349,7 +1369,7 @@ def _box_width_for_text(text: str, fontsize: float = 12.5, inches_per_unit: floa
     return max(3.0, text_units + padding)
 
 
-EXPLAIN_COLS = (['ra', 'dec', 'ztf_idx', 'ps1_idx', 'catalog', 'catalog_reason', 'outcome', 'g_point']
+EXPLAIN_COLS = (['ra', 'dec', 'ztf_idx', 'ps1_idx', 'catalog', 'catalog_reason', 'outcome', 'point_source']
                 + [f'{b}_{c}' for b in BANDS for c in ('ztf_status', 'ps1_status', 'ztf_psf', 'ps1_psf', 'ztf_snr', 'ps1_snr', 'sigma', 'dropped_by')])
 
 
@@ -1367,7 +1387,7 @@ def explain(field_id: int, ra: float, dec: float, data_dir: Optional[str] = None
     cat = {**CATALOG, -1: NOT_COMPARABLE}[int(r.catalog)]
     fmt = lambda v: f'{v:.2f}' if np.isfinite(v) else '-'
     print(f'field {field_id}: object {sep[i]:.2f}" from ({ra:.5f}, {dec:.5f})  ztf_idx {r.ztf_idx}  ps1_idx {r.ps1_idx}  '
-          f'{"point" if r.g_point else "extended"}  catalog: {cat} ({r.catalog_reason})')
+          f'{"point" if r.point_source else "extended"}  catalog: {cat} ({r.catalog_reason})')
     for b in BANDS:
         print(f'  {b}: ZTF {r[f"{b}_ztf_status"]} {fmt(r[f"{b}_ztf_psf"])} (S/N {fmt(r[f"{b}_ztf_snr"])}) | PS1 {r[f"{b}_ps1_status"]} {fmt(r[f"{b}_ps1_psf"])} '
               f'(S/N {fmt(r[f"{b}_ps1_snr"])}) | sigma {fmt(r[f"{b}_sigma"])} | {r[f"{b}_dropped_by"]}')

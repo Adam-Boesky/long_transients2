@@ -121,7 +121,7 @@ Per band, ZTF side (from `ztf_{b}.parquet` via `{b}_idx`; NaN where not detected
 | `{b}_ztf_psf` | float64 | N\* | `mag` (DAOPhot + MAGZP) |
 | `{b}_ztf_psf_err` | float64 | N\* | `sigmag` with error floor |
 | `{b}_ztf_snr` | float64 | N\* | DAOPhot `snr` with error floor |
-| `{b}_ztf_chi`, `{b}_ztf_sharp` | float32 | N | DAOPhot `chi`, `sharp` |
+| `{b}_ztf_sharp` | float32 | N | DAOPhot `sharp` |
 | `{b}_ztf_flags` | int16 | N | DAOPhot `flags` (0 where not detected) |
 | `{b}_ztf_kron`, `{b}_ztf_kron_err` | float64 | O | `zkron`, `zkron_err` (+ floor) |
 | `{b}_ztf_kron_masked` | float32 | O | `zkron_masked` |
@@ -154,7 +154,8 @@ Per band, PS1 side (from the PS1 object; NaN / 0 / -1 without one):
 | column | dtype | meaning |
 |---|---|---|
 | `gaia_sep_arcsec` | float64 | separation to the Gaia match, arcsec; NaN without |
-| `gaia_pm_sig` | float32 | `pm / (pmra_error + pmdec_error)` |
+| `gaia_pm`, `gaia_pmra`, `gaia_pmdec` | float32 | Gaia DR3 total and component proper motion, mas/yr (N); the cut's significance is computed by `gaia_pm_significance` (component errors in quadrature) |
+| `gaia_pmra_err`, `gaia_pmdec_err` | float32 | their errors, mas/yr (N) |
 | `gaia_parallax_over_error` | float32 | Gaia `parallax_over_error` (N) |
 
 ### 4c. PS1 skycells and catalog holes (`annotate_skycells`)
@@ -197,8 +198,7 @@ Per band, PS1 side (from the PS1 object; NaN / 0 / -1 without one):
 | `{b}_ztf_status`, `{b}_ps1_status` | string | D (S/N >= 5), L (below), U (nothing measured), X (side fails quality checks) (`detection_status`, `usable_sides`) |
 | `{b}_cat` | int8 | comparison: 0 ZTF vs PS1, 1 ZTF vs PS1 limit, 2 PS1 vs ZTF limit, -1 none (`COMPARISON`; in_both keeps only 0) |
 | `{b}_extendedness` | float64 | inverse-variance (PSF − Kron − 0.05)/σ over the two surveys; -inf with no Kron (`extendedness`) |
-| `{b}_point` | bool | object-wide morphology (`point_source`), identical in every band |
-| `{b}_kron_contaminated` | bool | ZTF-detected, extended, Kron aperture > 10% masked |
+| `point_source` | bool | object-wide morphology (`point_source`): not extended in ≥ 2 measured bands |
 | `{b}_use_kron` | bool | the band compares Kron magnitudes (extended, compared, Kron on each needed side) |
 | `{b}_ztf_limit`, `{b}_ps1_limit` | float32 | the `_limit_psf` or `_limit_kron` matching `_use_kron` |
 | `{b}_ztf_use`, `{b}_ztf_use_err` | float64 | ZTF magnitude entering dmag (PSF or Kron; for `_cat` 2 the sub-threshold measurement or the limit, error 0 for a limit) |
@@ -212,7 +212,6 @@ Per band, PS1 side (from the PS1 object; NaN / 0 / -1 without one):
 |---|---|---|
 | `{b}_dmag` | float64 | `{b}_ztf_use − {b}_ps1_use`, mag (negative: brighter in ZTF) |
 | `{b}_sigma` | float64 | signed σ against the band's KDE envelope; clipped one-sided against a limit; NaN for `_cat` -1 or `{b}_ps1_use` not > 14 |
-| `{b}_capped` | bool | \|σ\| beyond the grid, reported as ±`SIGMA_CAP` (8) |
 
 ### 4i. Outcome record (`annotate_outcomes`)
 

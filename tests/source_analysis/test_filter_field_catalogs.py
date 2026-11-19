@@ -23,7 +23,7 @@ def object_row(ztf: str, ps1: str, n_stack_detections: int = 3) -> dict:
     r = {'ra': 10.0, 'dec': 20.0, 'ccd': 1, 'qid': 1, **{f'{b}_{c}': v for b in BANDS for c, v in (('ccd', 1), ('qid', 1))}, 'ps1_qualityFlag': 0, 'ps1_skycell_bad': False, 'ps1_catalog_missing': False, **{f'{b}_ps1_covered': True for b in BANDS}, **{f'{b}_ps1_skycell_bad': False for b in BANDS},
          'ps1_nStackDetections': n_stack_detections,
          'ztf_idx': -1 if set(ztf) <= {'-', 'N'} else 0, 'ps1_idx': -1 if set(ps1) == {'-'} else 0,
-         'gaia_pm_sig': np.nan, 'gaia_parallax_over_error': np.nan, 'bright_star_d_over_R': np.inf, 'in_star_spike': False, 'bright_star_masked': False,
+         **{c: np.nan for c in ('gaia_pm', 'gaia_pmra', 'gaia_pmdec', 'gaia_pmra_err', 'gaia_pmdec_err')}, 'gaia_parallax_over_error': np.nan, 'bright_star_d_over_R': np.inf, 'in_star_spike': False, 'bright_star_masked': False,
          'nearest_other_arcsec': np.nan, 'inside_brighter_kron': False}
     for b, zc, pc in zip(BANDS, ztf, ps1):
         z = {'det': False, 'snr': np.nan, 'flags': 0, 'covered': True, **ZTF[zc]}
@@ -444,7 +444,7 @@ def test_the_sharpness_cut_can_be_limited_to_point_sources():
         r.update({f'{b}_ztf_kron_err': 0.1 for b in BANDS}); r.update({f'{b}_ps1_kron_err': 0.1 for b in BANDS})
     rows['broad point source'].update({f'{b}_ztf_kron': 20.0 for b in BANDS}); rows['broad extended'].update({f'{b}_ztf_kron': 19.0 for b in BANDS})
     s = ff.assign_catalogs(pd.DataFrame(list(rows.values()), index=list(rows)), OFF)
-    assert list(s.g_point) == [True, False]
+    assert list(s.point_source) == [True, False]
     both = ff.run_branch(s, 0, OFF.replace(sharp_max=0.5))[1]; point_only = ff.run_branch(s, 0, OFF.replace(sharp_max=0.5, sharp_point_only=True))[1]
     survive = lambda wf: list(sum(wf.mask(LAST_CONFIDENT(wf))[b] for b in BANDS) > 0)
     assert survive(both) == [False, False] and survive(point_only) == [False, True]
@@ -498,3 +498,11 @@ def test_without_a_ps1_object_a_band_needs_ps1_objects_nearby_for_its_limit_to_s
     s = ff.assign_catalogs(pd.DataFrame(list(rows.values()), index=list(rows)), OFF)
     assert list(s.g_ps1_status) == ['U', 'X', 'D'] and list(s.catalog) == [1, 1, 0]            # r and i still carry the second object
     assert "PS1: objects within 1' in the band" in [l for l, _ in ff.ps1_checks(s, 'g', OFF)]
+
+
+def test_the_proper_motion_cut_uses_the_components_errors_in_quadrature():
+    s = pd.DataFrame({'gaia_pmra': [3.0, 3.0, np.nan], 'gaia_pmdec': [4.0, 4.0, np.nan], 'gaia_pmra_err': [0.5, 1.5, np.nan],
+                      'gaia_pmdec_err': [0.5, 1.5, np.nan], 'gaia_parallax_over_error': [1.0, 1.0, np.nan]})
+    assert ff.gaia_pm_significance(s)[:2] == pytest.approx([10.0, 10 / 3])       # pm 5, sigma 0.5 and 1.5
+    pm_ok, plx_ok = ff.gaia_population_ok(s)
+    assert list(pm_ok) == [False, True, True] and list(plx_ok) == [True, True, True]   # no Gaia match passes
