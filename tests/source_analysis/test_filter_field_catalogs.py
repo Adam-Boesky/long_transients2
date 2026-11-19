@@ -20,7 +20,7 @@ PS1 = {'D': (1e-5, 1e-6, 0, 0, 1.0), 'L': (3e-6, 1e-6, 0, 0, 1.0), 'F': (-1e-6, 
 
 def object_row(ztf: str, ps1: str, n_stack_detections: int = 3) -> dict:
     """One object from three-letter g, r, i status codes per survey, in the columns `object_table` writes."""
-    r = {'ra': 10.0, 'dec': 20.0, 'ccd': 1, 'qid': 1, 'ps1_qualityFlag': 0, 'ps1_clear': True, 'ps1_skycell_bad': False, **{f'{b}_ps1_skycell_bad': False for b in BANDS},
+    r = {'ra': 10.0, 'dec': 20.0, 'ccd': 1, 'qid': 1, 'ps1_qualityFlag': 0, 'ps1_clear': True, 'ps1_skycell_bad': False, 'ps1_catalog_missing': False, **{f'{b}_ps1_skycell_bad': False for b in BANDS},
          'ps1_nStackDetections': n_stack_detections,
          'ztf_idx': -1 if set(ztf) <= {'-', 'N'} else 0, 'ps1_idx': -1 if set(ps1) == {'-'} else 0,
          'gaia_pm_sig': np.nan, 'gaia_parallax_over_error': np.nan, 'bright_star_d_over_R': np.inf, 'in_star_spike': False, 'bright_star_masked': False,
@@ -481,3 +481,11 @@ def test_outcomes_record_the_first_step_that_dropped_each_band_and_where_the_obj
     assert list(out.g_dropped_by) == [ff.KEPT, 'quality A', 'confident B']
     assert list(out.i_dropped_by) == ['quality A', '>= 2 bands: start', '|σ| step']
     assert list(out.r_dropped_by) == [ff.KEPT, 'quality A', '|σ| step']
+
+
+def test_a_position_where_dr2_has_no_catalog_gives_the_ps1_side_nothing_to_say():
+    from Extracting import ps1_skycells
+    assert list(ps1_skycells.catalog_missing([200.0, 200.0, 10.0, 215.0, 76.5], [35.48, 35.6, -31.0, -33.0, -27.0])) == [True, False, True, True, True]
+    rows = {'ztf only, in a box': {**object_row('DDD', '---'), 'ps1_catalog_missing': True}, 'ztf only, covered': object_row('DDD', '---')}
+    s = ff.assign_catalogs(pd.DataFrame(list(rows.values()), index=list(rows)), OFF)
+    assert list(s.catalog) == [-1, 1] and 'PS1: catalog covers the position' in [l for l, _ in ff.ps1_checks(s, 'g', OFF)]

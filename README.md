@@ -30,6 +30,7 @@ The quality checks (step 1), each answering "is the data at this position sound?
 | ZTF side | PS1 side |
 |---|---|
 | the reference image covers the position | not one of MAST's mis-registered polar skycells (with or without a PS1 object) |
+| | the DR2 catalog covers the position: not in one of MAST's missing-data boxes, Dec > −30 (without a PS1 object) |
 | DAOPhot flags = 0 | stack nFrames ≥ 4 |
 | > 5 px from a masked pixel (at the detection, or at the PS1 position for a limit) | residual sky ≤ 1e-7 |
 | extended objects: Kron aperture ≤ 10 % masked | not DEFECT, PEAK_ON_SPIKE, ON_SPIKE |

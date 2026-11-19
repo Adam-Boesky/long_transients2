@@ -22,6 +22,12 @@ main object and detection tables while the flux columns stayed populated, and li
 (linked from https://outerspace.stsci.edu/display/PANSTARRS/Plot+of+bad+skycells+near+the+North+Pole; 461 skycells,
 Dec 68.6-89.7), a copy of which sits next to this module. The detection and photometry there come from the same
 mis-registered stacks, so nothing PS1 measured in them is usable; see `is_bad`.
+
+Missing catalog: the same caveats page ("Missing data", https://outerspace.stsci.edu/display/PANSTARRS/PS1+DR2+caveats,
+read 2026-11-19) lists seven boxes, 4.9 square degrees in all, where no sources were ingested into ObjectThin although
+the images exist (MISSING_BOXES, its "Boundaries of regions with missing data" table), and states that the DR2
+catalog has a sharp cut at declination -30 (DEC_LIMIT; a narrow strip at RA 214-216 reaches -36, of uneven quality,
+and is treated as cut here too). A position in either has no PS1 catalog to compare against; see `catalog_missing`.
 """
 import os
 from functools import lru_cache
@@ -31,6 +37,16 @@ import numpy as np
 from astropy.wcs import WCS
 
 PIXEL_ARCSEC = 0.25
+DEC_LIMIT = -30.0                               # DR2 catalog cut (MAST DR2 caveats, "Missing data")
+MISSING_BOXES = np.array([                      # (dec_min, dec_max, ra_min, ra_max), MAST DR2 caveats, "Boundaries of regions with missing data"
+    (35.46, 35.499, 189.0, 267.7),
+    (35.46, 35.499, 0.0, 25.31),
+    (35.46, 35.499, 25.88, 47.25),
+    (76.88, 78.11, 123.34, 126.66),
+    (75.47, 76.40, 342.51, 345.00),
+    (73.60, 74.06, 343.50, 345.00),
+    (-27.18, -26.72, 76.40, 76.91),
+])
 OVERLAP_PX = 240                # each skycell extends this far into its neighbours, on every side
 GRID = np.array([               # ZONE, PROJCELL, NBAND, DEC, DEC_MIN, DEC_MAX, XCELL, YCELL, CRPIX1, CRPIX2  (ps1grid.fits)
     (13, 487, 72, -38.0, -39.98569922229713, -35.98748871852416, 6305, 6279, 239.5, 238.0),
@@ -160,3 +176,13 @@ def is_bad(ra: np.ndarray, dec: np.ndarray, any_covering: bool = True) -> np.nda
         return np.isin(code, codes).any(axis=1)                      # an absent cell is -1: never a bad code
     proj, cell = skycell_of(ra, dec)
     return np.isin(100 * proj.astype(np.int64) + cell, codes)
+
+
+
+def catalog_missing(ra: np.ndarray, dec: np.ndarray) -> np.ndarray:
+    """Whether the DR2 catalog has no sources at a position: inside one of MISSING_BOXES, or south of DEC_LIMIT."""
+    ra, dec = np.asarray(ra, float) % 360, np.asarray(dec, float)
+    out = dec < DEC_LIMIT
+    for d0, d1, r0, r1 in MISSING_BOXES:
+        out |= (dec >= d0) & (dec <= d1) & (ra >= r0) & (ra <= r1)
+    return out

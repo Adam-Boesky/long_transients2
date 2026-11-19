@@ -390,7 +390,8 @@ def ps1_checks(src: pd.DataFrame, b: str, cuts: Cuts = Cuts()) -> List[Tuple[str
     """PS1's side of band b, (label, passes) in order; without a PS1 object only the skycell check applies (the PS1
     limit stands in). First the band's row not from one of MAST's mis-registered polar skycells (`annotate_skycells`;
     PS1 invalidated every magnitude there, and the detections and fluxes come from the same bad stacks, so a
-    measurement from one is unusable and a missing PS1 object in one says nothing). With `cuts.ps1_sky_max`, then a
+    measurement from one is unusable and a missing PS1 object in one says nothing), and the position not in one of
+    DR2's missing-catalog regions when there is no PS1 object (`annotate_skycells`). With `cuts.ps1_sky_max`, then a
     residual sky at most that (a band without a sky value passes); with
     `cuts.ps1_min_nframes`, then a stack of at least that many input frames (nFrames 0, i.e. no stack input, fails)."""
     none = src.ps1_idx.values < 0
@@ -399,7 +400,8 @@ def ps1_checks(src: pd.DataFrame, b: str, cuts: Cuts = Cuts()) -> List[Tuple[str
            if sky_max is not None else [])
     frames = ([(f'PS1: stack nFrames >= {min_nframes}', none | (src[f'{b}_ps1_nFrames'].values >= min_nframes))]
               if min_nframes is not None else [])
-    stack = [('PS1: not in a flagged polar skycell', ~src[f'{b}_ps1_skycell_bad'].values)]
+    stack = [('PS1: not in a flagged polar skycell', ~src[f'{b}_ps1_skycell_bad'].values),
+             ('PS1: catalog covers the position', ~src.ps1_catalog_missing.values)]
     return (stack + sky + frames + [(label, none | ~_bits(src[f'{b}_ps1_{col}'].values, bit)) for label, col, bit in PS1_BAND_FLAGS]
             + [('PS1: measured in the band', none | src[f'{b}_ps1_meas'].values),
                (f'PS1: psfQfPerfect > {PSF_QF_MIN}', none | (src[f'{b}_ps1_psfQfPerfect'].values > PSF_QF_MIN))])
@@ -877,7 +879,9 @@ def annotate_skycells(src: pd.DataFrame) -> pd.DataFrame:
     object, each band is judged by the skycell its own row came from (`{b}_ps1_projcell`, `{b}_ps1_skycell`; an
     object in a skycell overlap can draw its bands from different skycells, and a measurement from a good one stays
     good). Without a PS1 object, every band is bad if any skycell covering the position is (`ps1_skycells.is_bad`):
-    PS1 may have seen nothing there because its stack is bad."""
+    PS1 may have seen nothing there because its stack is bad. `ps1_catalog_missing`: no PS1 object at a position
+    where DR2 has no catalog at all (`ps1_skycells.catalog_missing`: MAST's missing-data boxes, or south of its
+    declination cut), so the absence says nothing."""
     bad_codes = np.array([100 * p + c for p, c in ps1_skycells.bad_cells()], np.int64)
     has = src.ps1_idx.values >= 0
     empty_bad = np.zeros(len(src), bool)
@@ -887,6 +891,7 @@ def annotate_skycells(src: pd.DataFrame) -> pd.DataFrame:
         code = 100 * np.nan_to_num(src[f'{b}_ps1_projcell'].values, nan=-1).astype(np.int64) + np.nan_to_num(src[f'{b}_ps1_skycell'].values, nan=-1).astype(np.int64)
         cols[f'{b}_ps1_skycell_bad'] = np.where(has, np.isin(code, bad_codes), empty_bad)
     cols['ps1_skycell_bad'] = np.logical_or.reduce([cols[f'{b}_ps1_skycell_bad'] for b in BANDS])
+    cols['ps1_catalog_missing'] = ~has & ps1_skycells.catalog_missing(src.ra.values, src.dec.values)   # no PS1 object where DR2 has no catalog
     return _attach(src, cols)
 
 
