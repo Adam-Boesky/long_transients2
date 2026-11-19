@@ -76,3 +76,34 @@ def test_a_tie_on_masked_pixels_goes_to_the_quadrant_with_more_valid_bands(field
     assert field.loc[3, 'nan_dist_px'] == 0
     assert (field.loc[3, 'ccd'], field.loc[3, 'qid']) == (1, 2)
     assert not field.loc[3, 'g_covered'] and field.loc[3, 'r_covered'] and field.loc[3, 'on_ztf']
+
+
+def _band(ra, dec, snr):
+    return pd.DataFrame({'ra': ra, 'dec': dec, 'snr': snr, 'mag': 20.0, 'magerr': 0.1, 'chi': 1.0, 'sharp': 0.0, 'flags': 0})
+
+
+def test_merge_bands_links_every_pair_without_a_band_order_and_averages_positions():
+    s = 1 / 3600                                                              # one arcsecond, in degrees
+    g = _band([10.0], [20.0], [50.0])                                         # the star in g
+    r = _band([10.0 + 0.2 * s, 10.0 + 1.5 * s], [20.0, 20.0], [100.0, 5.0])    # the star 0.2" off, a faint neighbour 1.5" away
+    i = _band([10.0, 10.0 + 0.4 * s], [20.0 + 0.2 * s, 20.0 + 3.0 * s], [20.0, 8.0])   # the star; an unrelated i source 3" away
+    for order in ({'g': g, 'r': r, 'i': i}, {'i': i, 'r': r, 'g': g}):
+        o = ft.merge_bands(order).sort_values(['ra', 'dec']).reset_index(drop=True)
+        assert len(o) == 3 and sorted(o.nbands) == [1, 1, 3]
+        star = o[o.nbands == 3].iloc[0]
+        assert (star.g_idx, star.r_idx, star.i_idx) == (0, 0, 0)
+        assert abs(star.ra - (10.0 + 0.2 * s * 100 / 170)) < 1e-7              # S/N-weighted mean: r (100) pulls hardest
+        assert 0 < star.r_sep < 0.2 and star.g_sep > 0
+        assert set(zip(o.g_idx, o.r_idx, o.i_idx)) == {(0, 0, 0), (-1, 1, -1), (-1, -1, 1)}
+
+
+def test_merge_bands_splits_a_component_with_two_rows_of_one_band_at_its_longest_edge():
+    s = 1 / 3600
+    g = _band([10.0], [20.0], [10.0])
+    r = _band([10.0 + 0.3 * s], [20.0], [10.0])                               # r1: 0.3" from g1
+    i = _band([10.0 + 0.9 * s, 10.0 - 0.8 * s], [20.0, 20.0], [10.0, 10.0])  # i1: 0.6" from r1 (mutual); i2: 0.8" from g1 (mutual with g1)
+    o = ft.merge_bands({'g': g, 'r': r, 'i': i})
+    counts = o[['g_idx', 'r_idx', 'i_idx']].ge(0).sum(axis=1)
+    assert len(o) == 2 and sorted(counts) == [1, 3]                           # the 0.8" g-i2 edge goes; i2 stands alone
+    three = o[counts == 3].iloc[0]
+    assert (three.g_idx, three.r_idx, three.i_idx) == (0, 0, 0)

@@ -4,7 +4,8 @@ Order, per field:
   1. per band: each quadrant's DAOPhot catalog (`refpsfcat`) with our Kron photometry attached, concatenated over
      the quadrants, then deduplicated in the overlap strips (the 3200 px reference
      images are larger than the 3072 x 3080 px quadrants, so neighbouring images overlap by ~1-2');
-  2. the bands merged into objects by mutual nearest neighbour at MATCH_ARCSEC, seeded on i;
+  2. the bands merged into objects: every band pair matched by mutual nearest neighbour at MATCH_ARCSEC, the pairs
+     linked into objects (no band order), each object at the S/N-weighted mean position of its detections;
   3. the PS1 stack catalog (`ps1_stack`: our mirror of MAST's stack table, cleaned to one row per object) for the
      partitions under the field, restricted to objects inside some reference image;
   4. objects matched to PS1 by mutual nearest neighbour at MATCH_ARCSEC.
@@ -28,7 +29,6 @@ from .images import load_refimg
 from .utils import get_data_path
 from .ztf_products import product_dir, refimg_path
 
-MERGE_ORDER = ('i', 'r', 'g')      # seed band first
 MATCH_ARCSEC = 1.0
 REF_SIZE_PX = 3200                 # reference-image side (Explanatory Supplement section 7.2)
 PSF_COLS = {'ra': 'ra', 'dec': 'dec', 'xpos': 'x', 'ypos': 'y', 'mag': 'mag', 'sigmag': 'magerr', 'snr': 'snr', 'chi': 'chi', 'sharp': 'sharp', 'flags': 'flags'}
@@ -199,30 +199,60 @@ def field_band(field: int, quadrants: Iterable[Tuple[int, int]], band: str, data
 # ----------------------------------------------------------------------------------------------- objects
 
 def merge_bands(cats: Dict[str, pd.DataFrame], radius_arcsec: float = MATCH_ARCSEC) -> pd.DataFrame:
-    """ZTF objects: seeded on the first band of MERGE_ORDER, each later band attached by mutual nearest neighbour;
-    unmatched rows become new objects. Columns: ra, dec, nbands, best_snr, and per band `{b}_idx` (row in the band
-    table, -1 if absent), `{b}_sep`, and copies of the main photometry columns."""
-    order = [b for b in MERGE_ORDER if b in cats]
-    seed = cats[order[0]]
-    obj = pd.DataFrame({'ra': seed.ra.values, 'dec': seed.dec.values, f'{order[0]}_idx': np.arange(len(seed)), f'{order[0]}_sep': 0.0})
-    for b in order[1:]:
-        cat = cats[b]
-        j, sep = mutual_nearest(cat.ra, cat.dec, obj.ra, obj.dec, radius_arcsec)      # band row -> object
-        obj[f'{b}_idx'], obj[f'{b}_sep'] = -1, np.nan
-        matched = j >= 0
-        obj.loc[j[matched], f'{b}_idx'] = np.flatnonzero(matched)
-        obj.loc[j[matched], f'{b}_sep'] = sep[matched]
-        new = pd.DataFrame({'ra': cat.ra.values[~matched], 'dec': cat.dec.values[~matched], f'{b}_idx': np.flatnonzero(~matched), f'{b}_sep': 0.0})
-        obj = pd.concat([obj, new], ignore_index=True)
-    for b in BANDS:
-        if b not in cats:
-            obj[f'{b}_idx'], obj[f'{b}_sep'] = -1, np.nan
-            continue
-        obj[f'{b}_idx'] = obj[f'{b}_idx'].fillna(-1).astype(int)
-        idx = obj[f'{b}_idx'].values; has = idx >= 0
+    """ZTF objects from the band tables, independent of any band order: every pair of bands is matched by mutual
+    nearest neighbour within the radius, the pairs are the edges of a graph whose connected components are the objects,
+    and a component that holds two rows of one band (possible in a blend, through a third band) loses its longest edge
+    until every object has at most one row per band. An object's position is the S/N-weighted mean of its detections
+    (PS1's convention for its objects). Columns: ra, dec, nbands, best_snr, and per band `{b}_idx` (row in the band
+    table, -1 if absent), `{b}_sep` (the row's separation from the object position, arcsec) and copies of the main
+    photometry columns."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    present = [b for b in BANDS if b in cats]
+    offset = {}; n = 0
+    for b in present:
+        offset[b] = n; n += len(cats[b])
+    ra = np.concatenate([cats[b].ra.values for b in present]); dec = np.concatenate([cats[b].dec.values for b in present])
+    snr = np.concatenate([cats[b].snr.values for b in present]); band = np.concatenate([np.full(len(cats[b]), k) for k, b in enumerate(present)])
+    edges = []                                                             # (node, node, separation) over every band pair
+    for i, a in enumerate(present):
+        for b in present[i + 1:]:
+            j, sep = mutual_nearest(cats[a].ra, cats[a].dec, cats[b].ra, cats[b].dec, radius_arcsec)
+            k = np.flatnonzero(j >= 0)
+            edges.append(np.c_[k + offset[a], j[k] + offset[b], sep[k]])
+    e = np.concatenate(edges) if edges else np.zeros((0, 3))
+    while True:
+        g = coo_matrix((np.ones(len(e)), (e[:, 0].astype(int), e[:, 1].astype(int))), shape=(n, n))
+        n_obj, comp = connected_components(g, directed=False)
+        two = pd.DataFrame({'comp': comp, 'band': band}).duplicated().values     # a second row of some band in its component
+        bad = np.unique(comp[two])
+        if len(bad) == 0:
+            break
+        ec = comp[e[:, 0].astype(int)]
+        drop = pd.Series(e[:, 2]).groupby(ec).idxmax().loc[bad].values         # the longest edge of each bad component
+        e = np.delete(e, drop, axis=0)
+    # one row per object, members by band
+    w = np.where(np.isfinite(snr) & (snr > 0), snr, 1.0)
+    xyz = _xyz(ra, dec) * w[:, None]
+    sums = np.zeros((n_obj, 3)); np.add.at(sums, comp, xyz)
+    norm = np.linalg.norm(sums, axis=1); sums /= norm[:, None]
+    obj_ra = (np.degrees(np.arctan2(sums[:, 1], sums[:, 0])) + 360) % 360
+    obj_dec = np.degrees(np.arcsin(np.clip(sums[:, 2], -1, 1)))
+    obj = pd.DataFrame({'ra': obj_ra, 'dec': obj_dec})
+    for k, b in enumerate(present):
+        rows = np.flatnonzero(band == k)
+        idx = np.full(n_obj, -1); idx[comp[rows]] = rows - offset[b]
+        obj[f'{b}_idx'] = idx
+        has = idx >= 0
+        member = cats[b].iloc[np.clip(idx, 0, None)]
+        sep = np.degrees(2 * np.arcsin(np.linalg.norm(_xyz(member.ra.values, member.dec.values) - _xyz(obj_ra, obj_dec), axis=1) / 2)) * 3600
+        obj[f'{b}_sep'] = np.where(has, sep, np.nan)
         for col in OBJECT_COLS:
             if col in cats[b].columns:
                 obj[f'{b}_{col}'] = np.where(has, cats[b][col].values[np.clip(idx, 0, None)], np.nan)
+    for b in BANDS:
+        if b not in cats:
+            obj[f'{b}_idx'], obj[f'{b}_sep'] = -1, np.nan
     obj['nbands'] = sum((obj[f'{b}_idx'] >= 0).astype(int) for b in BANDS)
     obj['best_snr'] = np.nanmax(np.c_[[obj[f'{b}_snr'].values if f'{b}_snr' in obj else np.full(len(obj), np.nan) for b in BANDS]], axis=0)
     return obj

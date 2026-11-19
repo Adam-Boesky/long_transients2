@@ -48,9 +48,9 @@ Tables built before commit 234ec43 also carry SExtractor `kron_auto`, `kron_auto
 
 | column | dtype | meaning | computed by |
 |---|---|---|---|
-| `ra`, `dec` | float64 | position of the first band that created the object (seed i, then r, then g) | `merge_bands` |
+| `ra`, `dec` | float64 | S/N-weighted mean position of the object's detections | `merge_bands` |
 | `{b}_idx` | int64 | row in `ztf_{b}.parquet`, -1 if not detected in b | `merge_bands` |
-| `{b}_sep` | float64 | separation of the b row from the object position, arcsec; 0 for the creating band, NaN if absent | `merge_bands` |
+| `{b}_sep` | float64 | separation of the b row from the object position, arcsec; NaN if absent | `merge_bands` |
 | `{b}_mag`, `{b}_magerr`, `{b}_snr`, `{b}_chi`, `{b}_sharp`, `{b}_flags`, `{b}_nan_dist_px`, `{b}_zkron`, `{b}_zkron_err`, `{b}_zkron_flag`, `{b}_zkron_masked` | float64 | copies of the band-table columns (`OBJECT_COLS`; flags become float with NaN) | `merge_bands` |
 | `nbands` | int64 | number of bands with a detection | `merge_bands` |
 | `best_snr` | float64 | max DAOPhot `snr` over bands | `merge_bands` |
