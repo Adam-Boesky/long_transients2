@@ -88,7 +88,6 @@ Errors and S/N carry a 0.01 mag floor (`floor_err`).
 | `ps1_catalog_missing` | no PS1 object, in a DR2 missing-data box or Dec < −30 | `annotate_skycells` |
 | `bright_star_d_over_R` | to the nearest G < 16 star, in its mask radii | `annotate_bright_stars` |
 | `in_star_spike` | in one of its four spike boxes | `annotate_bright_stars` |
-| `bright_star_masked` | `d_over_R < 1` or `in_star_spike` | `annotate_bright_stars` |
 | `nearest_other_arcsec` | to the nearest other ZTF or PS1 entry (NaN beyond 60″) | `annotate_neighbours` |
 | `inside_brighter_kron` | inside a brighter object's Kron aperture | `annotate_neighbours` |
 
@@ -114,7 +113,7 @@ Errors and S/N carry a 0.01 mag floor (`floor_err`).
 | `outcome` | `candidate`, `not comparable: <reason>`, or `dropped: <step>` |
 
 Derived in the filter, not stored: compared magnitudes (`compared_magnitudes`), PS1 depth (`ps1_depth`), polar-skycell
-badness (`ps1_skycell_bad`), Gaia significances (`gaia_population_ok`).
+badness (`ps1_skycell_bad`), the bright-star mask (`bright_star_masked`), Gaia significances (`gaia_population_ok`).
 
 ## `filter/<catalog>_candidates`
 

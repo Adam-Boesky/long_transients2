@@ -23,7 +23,7 @@ def object_row(ztf: str, ps1: str, n_stack_detections: int = 3) -> dict:
     r = {'ra': 10.0, 'dec': 20.0, 'ccd': 1, 'qid': 1, **{f'{b}_{c}': v for b in BANDS for c, v in (('ccd', 1), ('qid', 1))}, 'ps1_qualityFlag': 0, 'ps1_catalog_missing': False, **{f'{b}_ps1_covered': True for b in BANDS}, **{f'{b}_ps1_{c}': 0 for b in BANDS for c in ('projcell', 'skycell')},
          'ps1_nStackDetections': n_stack_detections,
          'ztf_idx': -1 if set(ztf) <= {'-', 'N'} else 0, 'ps1_idx': -1 if set(ps1) == {'-'} else 0,
-         **{c: np.nan for c in ('gaia_pm', 'gaia_pmra', 'gaia_pmdec', 'gaia_pmra_err', 'gaia_pmdec_err')}, 'gaia_parallax_over_error': np.nan, 'bright_star_d_over_R': np.inf, 'in_star_spike': False, 'bright_star_masked': False,
+         **{c: np.nan for c in ('gaia_pm', 'gaia_pmra', 'gaia_pmdec', 'gaia_pmra_err', 'gaia_pmdec_err')}, 'gaia_parallax_over_error': np.nan, 'bright_star_d_over_R': np.inf, 'in_star_spike': False,
          'nearest_other_arcsec': np.nan, 'inside_brighter_kron': False}
     for b, zc, pc in zip(BANDS, ztf, ps1):
         z = {'det': False, 'snr': np.nan, 'flags': 0, 'covered': True, **ZTF[zc]}
@@ -135,15 +135,16 @@ def test_an_object_whose_ps1_side_is_a_measurement_needs_two_stack_detections():
     assert list(survivors(1)) == [False, False, False, False, True]                  # in_ztf: the PS1 side is a limit, no stack test
 
 
-def test_an_object_inside_a_bright_star_mask_is_dropped_only_when_the_mask_is_on():
-    rows = {'inside': {**object_row('DDD', 'DDD'), 'bright_star_d_over_R': 0.5, 'bright_star_masked': True},
+def test_a_bright_star_mask_makes_the_ztf_side_unusable_only_when_the_mask_is_on():
+    rows = {'inside the circle': {**object_row('DDD', 'DDD'), 'bright_star_d_over_R': 0.5},
+            'in a spike': {**object_row('UUU', 'DDD'), 'bright_star_d_over_R': 2.0, 'in_star_spike': True},
             'outside': {**object_row('DDD', 'DDD'), 'bright_star_d_over_R': 1.5}}
-    s = ff.assign_catalogs(pd.DataFrame(list(rows.values()), index=list(rows)), OFF)
-    def survivors(mask):
-        wf = ff.run_branch(s, 0, OFF.replace(bright_star_mask=mask))[1]
-        return list(sum(wf.mask(LAST_CONFIDENT(wf))[b] for b in BANDS) > 0)
-    assert survivors(True) == [False, True]
-    assert survivors(False) == [True, True]
+    frame = pd.DataFrame(list(rows.values()), index=list(rows))
+    on = ff.assign_catalogs(frame, OFF.replace(bright_star_mask=True))
+    assert list(on.g_ztf_status) == ['X', 'X', 'D'] and list(on.g_ps1_status) == ['D', 'D', 'D']   # PS1 judges its own side
+    assert list(on.catalog) == [-1, -1, 0]                                                       # masked: not comparable
+    off = ff.assign_catalogs(frame, OFF)
+    assert list(off.catalog) == [0, 2, 0]
 
 
 def test_bright_star_distance_is_in_units_of_the_star_mask_radius():
@@ -328,7 +329,7 @@ def test_the_reference_excludes_detections_that_fail_their_own_checks_but_not_th
         junk[f'{b}_ztf_maglim'] = 23.6; junk[f'{b}_ps1_nFrames'] = 30.0
     assert ff.completeness_limits(pd.concat([s, junk], ignore_index=True), OFF).g_ps1_limit.iloc[0] == pytest.approx(expected, abs=0.15)
     junk_rows = np.flatnonzero((mag < 21.5) & (np.arange(len(mag)) % 2 == 0))                      # half the bright ZTF objects: under a mask, unrecovered
-    masked = s.copy(); masked.loc[masked.index[junk_rows], ['bright_star_d_over_R', 'bright_star_masked']] = [0.5, True]
+    masked = s.copy(); masked.loc[masked.index[junk_rows], 'bright_star_d_over_R'] = 0.5
     masked.loc[masked.index[junk_rows], ['g_ps1_detected', 'ps1_idx']] = [False, -1]; masked.loc[masked.index[junk_rows], 'g_ps1_psf'] = np.nan
     assert ff.completeness_limits(masked, OFF).g_ps1_limit.iloc[0] < 20.0                      # mask off: they read as PS1 incompleteness
     assert ff.completeness_limits(masked, OFF.replace(bright_star_mask=True)).g_ps1_limit.iloc[0] == pytest.approx(expected, abs=0.3)
@@ -458,7 +459,7 @@ def test_spike_boxes_mask_along_the_four_position_angles_out_to_the_half_length_
     stars = pd.DataFrame({'ra': [150.0], 'dec': [dec0], 'phot_g_mean_mag': [G]})
     out = ff.annotate_bright_stars(src, stars)
     assert list(out.in_star_spike) == [True, True, True, True, False, False, False]
-    assert list(out.bright_star_masked) == [True, True, True, True, False, False, False]
+    assert list(ff.bright_star_masked(out)) == [True, True, True, True, False, False, False]
     assert out.bright_star_d_over_R.iloc[0] == pytest.approx(0.8 * L / R, rel=1e-3) and 0.8 * L / R > 1   # along the spike but outside the circle: the box did it
 
 

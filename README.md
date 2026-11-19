@@ -8,7 +8,7 @@ flowchart TD
     Q["<b>1 · Quality</b> — per band, per survey<br/>is the data here usable?<br/><i>usable, or X</i>"]
     D["<b>2 · Detection</b> — per band, per usable side<br/>what does the survey have?<br/><i>D measured at S/N ≥ 5 · L measured below · U nothing: its limit stands in</i>"]
     S["<b>3 · Comparison and sorting</b><br/>per band: (D, D) two-sided · (D, L/U) ZTF vs PS1 limit · (L/U, D) PS1 vs ZTF limit · an X or (L/U, L/U): nothing<br/>per object: ≥ 2 bands of one kind → <b>in_both</b> / <b>in_ztf</b> / <b>in_pstarr</b>, else not comparable (with the reason)"]
-    CONF["<b>4 · Confident</b> — is it one real object?<br/>bright-star mask · sharpness (point sources)<br/>in_ztf, in_pstarr: no object within 3″, outside brighter objects' Kron apertures<br/>in_both, in_pstarr: PS1 nStackDetections ≥ 2, not BAD_STACK, not SUSPECT_STACK"]
+    CONF["<b>4 · Confident</b> — is it one real object?<br/>sharpness (point sources)<br/>in_ztf, in_pstarr: no object within 3″, outside brighter objects' Kron apertures<br/>in_both, in_pstarr: PS1 nStackDetections ≥ 2, not BAD_STACK, not SUSPECT_STACK"]
     POP["<b>5 · Population</b> — not Galactic<br/>no Gaia proper motion or parallax at 5σ"]
     CAL["<b>6 · Calibrate</b> on what is left<br/>each survey's 90 % recovery limit per quadrant, PSF and Kron · the Δmag envelope from the two-sided bands"]
     INT["<b>7 · Interesting</b><br/>σ from the envelope: either sign for in_both, ZTF brighter only for in_ztf, PS1 brighter only for in_pstarr<br/>|σ| > 3 in ≥ 2 bands, ≥ 2 of them the same sign"]
@@ -29,7 +29,8 @@ The quality checks (step 1), each answering "is the data at this position sound?
 
 | ZTF side | PS1 side |
 |---|---|
-| the reference image covers the position | not one of MAST's mis-registered polar skycells (with or without a PS1 object) |
+| outside every Gaia G < 16 star's mask: its circle and four spike boxes | not one of MAST's mis-registered polar skycells (with or without a PS1 object) |
+| the reference image covers the position | |
 | | the DR2 catalog covers the position: not in one of MAST's missing-data boxes, Dec > −30 (without a PS1 object) |
 | | PS1 measured some object in the band within 1′ (without a PS1 object: its stack reaches the position) |
 | DAOPhot flags = 0 | stack nFrames ≥ 4 |

@@ -6,7 +6,9 @@ unmatched PS1 object), and every band of it is judged in the same order, each st
 `Waterfall.groups`, boxed in `Waterfall.flowchart`):
 
   1. quality (`usable_sides`): each survey's side of the band passes its quality checks or is X, unusable for a
-     measurement or a limit. ZTF (`ztf_checks`): the image covers the position, DAOPhot flags = 0, NAN_RADIUS_PX clear
+     measurement or a limit. ZTF (`ztf_checks`): outside every Gaia G < 16 star's mask (the circle `bright_star_radius`
+     and four diffraction-spike boxes `spike_half_length`, calibrated on ZTF's images), the image covers the
+     position, DAOPhot flags = 0, NAN_RADIUS_PX clear
      of masked pixels (at the detection, or at the PS1 position for a non-detection) and, for extended objects, a ZTF
      Kron aperture at most KRON_MAX_MASKED masked. PS1 (`ps1_checks`): not one of MAST's mis-registered polar
      skycells (`ps1_skycells`; with or without a PS1 object); without a PS1 object, the DR2 catalog covering the
@@ -30,8 +32,7 @@ unmatched PS1 object), and every band of it is judged in the same order, each st
      the population the one-sided candidates come from; in PSF and in Kron magnitude, a band uses the kind it
      compares), never deeper than the survey's nominal depth (ZTF's MAGLIM; `ps1_stack.stack_depth` of the stack's
      nFrames at the position);
-  4. confident (`real_checks`, object-wide): outside every bright star's mask, the circle (`bright_star_radius`) and
-     the four diffraction-spike boxes (`spike_half_length`); optionally a ZTF sharpness (`ztf_sharpness`) within
+  4. confident (`real_checks`, object-wide): optionally a ZTF sharpness (`ztf_sharpness`) within
      `sharp_max` for point sources; for in_ztf and in_pstarr, optionally (`annotate_neighbours`) no other object of
      either survey within `isolation_arcsec` nor inside a brighter object's Kron aperture (`neighbour_kron`): a
      one-sided object that close to another is most often a piece of the same light; for in_both and in_pstarr, PS1's
@@ -118,7 +119,7 @@ ERR_FLOOR_MAG = 0.01            # calibration floor per survey (PS1 ubercal, zub
 @dataclass(frozen=True)
 class Cuts:
     """The optional cuts of the pipeline. The defaults are the full pipeline; None (or False) turns a cut off."""
-    bright_star_mask: bool = True             # drop objects inside a Gaia G < BRIGHT_STAR_G_MAX star's mask circle or spike boxes
+    bright_star_mask: bool = True             # a ZTF side inside a Gaia G < BRIGHT_STAR_G_MAX star's mask circle or spike boxes is X
     sharp_max: Optional[float] = 0.5          # drop objects whose S/N^2-weighted DAOPhot |sharp| exceeds this
     sharp_point_only: bool = True             # ... point sources only: extended objects are broad by nature
     ps1_sky_max: Optional[float] = 1e-7       # a PS1 band with residual sky above this (Jy/arcsec^2) is untrustworthy
@@ -348,14 +349,23 @@ def point_source(src: pd.DataFrame) -> np.ndarray:
 
 # ----------------------------------------------------------------------------------------------- trust, detection, catalogs
 
-def ztf_checks(src: pd.DataFrame, b: str, point: np.ndarray) -> List[Tuple[str, np.ndarray]]:
+def bright_star_masked(src: pd.DataFrame) -> np.ndarray:
+    """Inside a Gaia G < BRIGHT_STAR_G_MAX star's mask: its circle (`bright_star_d_over_R` < 1) or one of its spike
+    boxes (`in_star_spike`), as calibrated on ZTF's images (`annotate_bright_stars`)."""
+    return (src.bright_star_d_over_R.values < 1) | src.in_star_spike.values
+
+
+def ztf_checks(src: pd.DataFrame, b: str, point: np.ndarray, cuts: Cuts = Cuts()) -> List[Tuple[str, np.ndarray]]:
     """ZTF's side of band b, (label, passes) in order. A detection is judged where it was measured; a non-detection
     stands for the reference image's limit at the PS1 position, so it needs the image and valid pixels there (without
-    a PS1 object it has nothing to be compared with, and only coverage is checked)."""
+    a PS1 object it has nothing to be compared with, and only coverage is checked). With `cuts.bright_star_mask`,
+    first the position outside every bright star's mask: ZTF's data there (detections, limits) belong to the star's
+    halo or spikes. PS1 judges its own side near stars with its spike and star-core flags (`ps1_checks`)."""
     det = src[f'{b}_ztf_det'].values
     clear = src[f'{b}_ztf_nan_dist'].values > NAN_RADIUS_PX                           # the detection's image, or the limit's
     kron_ok = src[f'{b}_ztf_kron_masked'].values <= KRON_MAX_MASKED
-    return [('ZTF image covers the position', det | src[f'{b}_ztf_covered'].values),
+    mask = [('ZTF: outside bright-star masks', ~bright_star_masked(src))] if cuts.bright_star_mask else []
+    return mask + [('ZTF image covers the position', det | src[f'{b}_ztf_covered'].values),
             ('ZTF: DAOPhot flags = 0', ~det | (src[f'{b}_ztf_flags'].values == 0)),
             (f'ZTF: > {NAN_RADIUS_PX} px from a masked pixel', clear),
             (f'extended: ZTF Kron aperture <= {100 * KRON_MAX_MASKED:.0f}% masked', ~det | point | kron_ok)]
@@ -393,7 +403,7 @@ def usable_sides(src: pd.DataFrame, b: str, point: np.ndarray, cuts: Cuts = Cuts
     """Step 1, quality: (ZTF usable, PS1 usable) for band b per object, each side passing all of its checks
     (`ztf_checks`, `ps1_checks`). A side that fails is X in `band_status`: nothing on it, measurement or limit, is
     compared. A bad skycell makes the PS1 side unusable even without a PS1 object."""
-    return _passes(ztf_checks(src, b, point)), _passes(ps1_checks(src, b, cuts))
+    return _passes(ztf_checks(src, b, point, cuts)), _passes(ps1_checks(src, b, cuts))
 
 
 def detection_status(src: pd.DataFrame, b: str) -> Tuple[np.ndarray, np.ndarray]:
@@ -443,14 +453,14 @@ def completeness_references(src: pd.DataFrame, cuts: Cuts = Cuts()) -> Tuple[Dic
     """The reference populations of `completeness_limits`, per band: (ZTF detections that PS1's limit is measured
     against, PS1 detections that ZTF's limit is measured against)."""
     point = point_source(src)
-    mask = ~src.bright_star_masked.values if cuts.bright_star_mask else np.ones(len(src), bool)
+    mask = ~bright_star_masked(src) if cuts.bright_star_mask else np.ones(len(src), bool)   # ZTF's limit is unreliable there too
     isolated = ~(src.nearest_other_arcsec.values <= cuts.isolation_arcsec) if cuts.isolation_arcsec is not None else np.ones(len(src), bool)
     clear_of_kron = ~src.inside_brighter_kron.values if cuts.neighbour_kron else np.ones(len(src), bool)
     pm_ok, plx_ok = gaia_population_ok(src)
     population_ok = pm_ok & plx_ok
     position_ok = mask & isolated & clear_of_kron & population_ok & ~ps1_skycell_bad(src)   # no PS1 data to recover with, or to be recovered
     z_sharp_ok = ~sharpness_fails(src, point, cuts)
-    z_trust = {b: _passes(ztf_checks(src, b, point)) & src[f'{b}_ztf_det'].values & (src[f'{b}_ztf_snr'].values >= SNR_MIN) for b in BANDS}
+    z_trust = {b: _passes(ztf_checks(src, b, point, cuts)) & src[f'{b}_ztf_det'].values & (src[f'{b}_ztf_snr'].values >= SNR_MIN) for b in BANDS}
     p_trust = {b: _passes(ps1_checks(src, b, cuts)) & src[f'{b}_ps1_detected'].values & (src[f'{b}_ps1_snr'].values >= SNR_MIN) for b in BANDS}
     n_z, n_p = sum(z_trust[b].astype(int) for b in BANDS), sum(p_trust[b].astype(int) for b in BANDS)
     stack_ok = (src.ps1_nStackDetections.values >= PS1_MIN_STACK_DETECTIONS) & ~_bits(src.ps1_qualityFlag.values, BAD_STACK | SUSPECT_STACK)
@@ -920,7 +930,7 @@ def annotate_bright_stars(src: pd.DataFrame, stars: pd.DataFrame, out_to: float 
     """`bright_star_d_over_R`: distance to the nearest bright star in units of that star's mask radius
     (`bright_star_radius`); inf beyond `out_to` radii of every star. `in_star_spike`: inside one of a star's four
     diffraction-spike boxes (SPIKE_PA, SPIKE_WIDTH_ARCSEC, `spike_half_length`; ZTF is an equatorial Schmidt, so the
-    spikes sit at fixed position angles on the sky). `bright_star_masked`: either. A star within SELF_ARCSEC of the
+    spikes sit at fixed position angles on the sky); `bright_star_masked` combines them. A star within SELF_ARCSEC of the
     object is the object itself and does not count."""
     cosd = np.cos(np.radians(np.median(src.dec.values)))
     tree = cKDTree(np.c_[src.ra.values * cosd, src.dec.values])
@@ -942,7 +952,7 @@ def annotate_bright_stars(src: pd.DataFrame, stars: pd.DataFrame, out_to: float 
             th = np.radians(pa)
             along = dx * np.sin(th) + dy * np.cos(th); across = dx * np.cos(th) - dy * np.sin(th)
             spike[hits[~own & (np.abs(along) <= l) & (np.abs(across) <= SPIKE_WIDTH_ARCSEC / 2)]] = True
-    return _attach(src, {'bright_star_d_over_R': best, 'in_star_spike': spike, 'bright_star_masked': (best < 1) | spike})
+    return _attach(src, {'bright_star_d_over_R': best, 'in_star_spike': spike})
 
 
 # ----------------------------------------------------------------------------------------------- branches
@@ -1064,8 +1074,6 @@ def real_checks(src: pd.DataFrame, catalog: int, cuts: Cuts = Cuts()) -> List[Tu
     limit and all three only say the object is faint there."""
     checks = []
     sharp_max, isolation_arcsec = cuts.sharp_max, cuts.isolation_arcsec
-    if cuts.bright_star_mask:
-        checks.append(('outside bright-star masks', ~src.bright_star_masked.values))
     if isolation_arcsec is not None and catalog in (1, 2):                 # neighbour cuts before sharpness: what they
         checks.append((f'no other object within {isolation_arcsec:g}"',    # catch (fragments, pieces of other objects)
                        ~(src.nearest_other_arcsec.values <= isolation_arcsec)))   # is attributed to them in the waterfalls
@@ -1105,7 +1113,7 @@ def quality_steps(src: pd.DataFrame, point: np.ndarray, cuts: Cuts = Cuts()) -> 
         checks = {b: checks_of(b) for b in BANDS}
         return [(group, label, {b: checks[b][i][1] for b in BANDS}) for i, (label, _) in enumerate(checks[BANDS[0]])]
     start = per_band('structure', lambda b: [('measured by ZTF or PS1', src[f'{b}_ztf_det'].values | src[f'{b}_ps1_meas'].values)])
-    quality = per_band('quality', lambda b: ztf_checks(src, b, point) + ps1_checks(src, b, cuts))
+    quality = per_band('quality', lambda b: ztf_checks(src, b, point, cuts) + ps1_checks(src, b, cuts))
     comparable = per_band('comparison', lambda b: [(COMPARABLE, src[f'{b}_cat'].values >= 0)])
     return start + quality + comparable
 
