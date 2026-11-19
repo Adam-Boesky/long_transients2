@@ -32,6 +32,7 @@ from .ztf_products import product_dir, refimg_path
 
 MATCH_ARCSEC = 1.0
 REF_SIZE_PX = 3200                 # reference-image side (Explanatory Supplement section 7.2)
+CLEAN_PX = 5                       # a position this far from a masked pixel counts as clean when choosing among covering images
 PSF_COLS = {'ra': 'ra', 'dec': 'dec', 'xpos': 'x', 'ypos': 'y', 'mag': 'mag', 'sigmag': 'magerr', 'snr': 'snr', 'chi': 'chi', 'sharp': 'sharp', 'flags': 'flags'}
 KRON_COLS = {'mag': 'zkron', 'magerr': 'zkron_err', 'r1': 'zkron_r1', 'r_ap': 'zkron_rap', 'sky_radius': 'zkron_sky', 'flag': 'zkron_flag', 'masked_frac': 'zkron_masked'}
 
@@ -296,35 +297,69 @@ def _pixels(wcs, shape: Tuple[int, int], ra: np.ndarray, dec: np.ndarray) -> Tup
     return inside, np.clip(np.round(x).astype(int), 0, nx - 1), np.clip(np.round(y).astype(int), 0, ny - 1)
 
 
-def _covered_in_quadrant(args):
-    """Indices into the object table of the objects on a valid pixel of one quadrant-band image."""
+def _quadrant_maglim(field: int, ccd: int, qid: int, band: str, data_dir: Optional[str] = None) -> float:
+    """The reference image's MAGLIM (its nominal 5-sigma depth) from the header; NaN where the band has no image."""
+    data_dir = data_dir or get_data_path()
+    if not has_quadrant_band(field, ccd, qid, band, data_dir):
+        return np.nan
+    h = fits.getheader(refimg_path(os.path.join(data_dir, 'ztf_data'), field, ccd, qid, band))
+    return float(h['MAGLIM']) if 'MAGLIM' in h else np.nan
+
+
+def _coverage_in_quadrant(args):
+    """For the positions inside one quadrant-band image: (indices, on a valid pixel, distance to the nearest masked pixel
+    in px, the image's MAGLIM)."""
     field, ccd, qid, band, data_dir, ra, dec = args
     bad, wcs = quadrant_mask(field, ccd, qid, band, data_dir)
     idx = _near_image(wcs, bad.shape, ra, dec)
     inside, xi, yi = _pixels(wcs, bad.shape, ra[idx], dec[idx])
-    return idx[inside & ~bad[yi, xi]]
+    idx, xi, yi = idx[inside], xi[inside], yi[inside]
+    dist = distance_transform_edt(~bad)[yi, xi] if len(idx) else np.zeros(0)
+    return idx, ~bad[yi, xi], dist, _quadrant_maglim(field, ccd, qid, band, data_dir)
 
 
-def object_coverage(obj: pd.DataFrame, field: int, quadrants: Iterable[Tuple[int, int]], data_dir: Optional[str] = None,
-                    n_jobs: int = 1) -> pd.DataFrame:
-    """`{b}_covered`: whether each object sits on a valid pixel of some quadrant's reference image in band b. A band
-    without a detection is a non-detection only where this is true; the band images have different footprints.
-    Only objects inside each image's sky box are projected; quadrant-bands run in `n_jobs` processes."""
-    ra, dec = obj.ra.values, obj.dec.values
+def ztf_coverage(ra: np.ndarray, dec: np.ndarray, field: int, quadrants: Iterable[Tuple[int, int]], data_dir: Optional[str] = None,
+                 n_jobs: int = 1) -> pd.DataFrame:
+    """What ZTF has at each position, per band, from the one covering image chosen in this order: the position on a
+    valid pixel, then at least CLEAN_PX from a masked pixel, then the deepest MAGLIM. Columns `{b}_covered` (some
+    image has it on a valid pixel), `{b}_ccd`, `{b}_qid` (that image; -1 if none covers it), `{b}_nan_dist_px` (the
+    distance to the nearest masked pixel in it; 0 if none covers it) and `{b}_maglim` (its MAGLIM; NaN if none), plus
+    `on_image`: inside some image of some band at all. Quadrant-bands run in `n_jobs` processes."""
+    ra, dec = np.asarray(ra, float), np.asarray(dec, float)
+    quadrants = list(quadrants)
     jobs = [(field, ccd, qid, b, data_dir, ra, dec) for b in BANDS for ccd, qid in quadrants]
     if n_jobs > 1:
         from multiprocessing import get_context
         with get_context('fork').Pool(n_jobs) as pool:
-            hits = pool.map(_covered_in_quadrant, jobs)
+            hits = pool.map(_coverage_in_quadrant, jobs)
     else:
-        hits = [_covered_in_quadrant(j) for j in jobs]
+        hits = [_coverage_in_quadrant(j) for j in jobs]
+    n = len(ra)
+    out = {'on_image': np.zeros(n, bool)}
     for b in BANDS:
-        covered = np.zeros(len(obj), bool)
-        for job, h in zip(jobs, hits):
-            if job[3] == b:
-                covered[h] = True
-        obj[f'{b}_covered'] = covered
-    return obj
+        score = np.full(n, -np.inf)
+        ccd, qid = np.full(n, -1, np.int16), np.full(n, -1, np.int8)
+        covered, dist, maglim = np.zeros(n, bool), np.zeros(n), np.full(n, np.nan)
+        for job, (idx, valid, d, ml) in zip(jobs, hits):
+            if job[3] != b or len(idx) == 0:
+                continue
+            out['on_image'][idx] = True
+            sc = valid * 1e4 + (valid & (d > CLEAN_PX)) * 1e2 + np.where(valid, np.nan_to_num(ml, nan=0.0), d)   # covered > clean > deeper
+            better = sc > score[idx]
+            take = idx[better]
+            score[take], ccd[take], qid[take] = sc[better], job[1], job[2]
+            covered[take], dist[take], maglim[take] = valid[better], d[better], ml
+        out.update({f'{b}_covered': covered, f'{b}_ccd': np.where(covered, ccd, -1).astype(np.int16), f'{b}_qid': np.where(covered, qid, -1).astype(np.int8),
+                    f'{b}_nan_dist_px': np.where(covered, dist, 0.0).astype(np.float32), f'{b}_maglim': np.where(covered, maglim, np.nan).astype(np.float32)})
+    return pd.DataFrame(out)
+
+
+def object_coverage(obj: pd.DataFrame, field: int, quadrants: Iterable[Tuple[int, int]], data_dir: Optional[str] = None,
+                    n_jobs: int = 1) -> pd.DataFrame:
+    """The ZTF objects with `ztf_coverage` at their positions: for a band without a detection this is where its limit
+    comes from; a band without a detection is a non-detection only where `{b}_covered`."""
+    cov = ztf_coverage(obj.ra.values, obj.dec.values, field, quadrants, data_dir, n_jobs)
+    return pd.concat([obj.reset_index(drop=True), cov.drop(columns='on_image')], axis=1)
 
 
 # ----------------------------------------------------------------------------------------------- PS1
@@ -337,55 +372,17 @@ def _quadrant_sky_grid(field: int, ccd: int, qid: int, data_dir: Optional[str], 
     return np.asarray(ra), np.asarray(dec)
 
 
-def _ps1_in_quadrant(args):
-    """For the PS1 objects near one quadrant: (indices, inside some band's image, {band: on a valid pixel}, distance to
-    the nearest masked pixel over the bands that contain them, inf elsewhere)."""
-    field, ccd, qid, data_dir, ra, dec = args
-    masks = {b: quadrant_mask(field, ccd, qid, b, data_dir) for b in BANDS}
-    idx = np.unique(np.concatenate([_near_image(wcs, bad.shape, ra, dec) for bad, wcs in masks.values()]))
-    inside_any, dist, covered = np.zeros(len(idx), bool), np.full(len(idx), np.inf), {}
-    for b, (bad, wcs) in masks.items():
-        inside, xi, yi = _pixels(wcs, bad.shape, ra[idx], dec[idx])
-        covered[b] = inside & ~bad[yi, xi]
-        inside_any |= inside
-        dist = np.where(inside, np.minimum(dist, distance_transform_edt(~bad)[yi, xi]), dist)
-    return idx, inside_any, covered, dist
-
-
 def ps1_field(field: int, quadrants: Iterable[Tuple[int, int]], data_dir: Optional[str] = None,
               stack: Optional[str] = None, n_jobs: int = 1) -> pd.DataFrame:
     """The field's PS1 objects: the cleaned stack catalog of every partition under its reference images
-    (`ps1_stack.objects`), restricted to objects inside some image. Each object takes the quadrant where it lies farthest
-    from a masked pixel (ties, e.g. on masked pixels in two overlapping images, go to the quadrant where it is on valid
-    pixels in more bands), with that quadrant's `{b}_covered`, `on_ztf` (on a valid pixel in some band) and
-    `nan_dist_px`. Objects on masked pixels (saturated stars) stay, so they can still serve as counterparts."""
+    (`ps1_stack.objects`), restricted to objects inside some image, with `ztf_coverage` at their positions (what ZTF
+    has there, per band). Objects on masked pixels (saturated stars) stay, so they can still serve as counterparts."""
     quadrants = list(quadrants)
     grid = [_quadrant_sky_grid(field, ccd, qid, data_dir) for ccd, qid in quadrants]
     cat = ps1_stack.objects(np.concatenate([g[0] for g in grid]), np.concatenate([g[1] for g in grid]), stack)
-    ra, dec = cat.ra.to_numpy(), cat.dec.to_numpy()
-    jobs = [(field, ccd, qid, data_dir, ra, dec) for ccd, qid in quadrants]
-    if n_jobs > 1:
-        from multiprocessing import get_context
-        with get_context('fork').Pool(n_jobs) as pool:
-            results = pool.map(_ps1_in_quadrant, jobs)
-    else:
-        results = [_ps1_in_quadrant(j) for j in jobs]
-    best = np.full(len(cat), -1.0)                                       # -1: inside no reference image
-    best_n_covered = np.full(len(cat), -1)
-    ccd, qid = np.full(len(cat), -1, np.int16), np.full(len(cat), -1, np.int8)
-    covered = {b: np.zeros(len(cat), bool) for b in BANDS}
-    for (q_ccd, q_qid), (idx, inside_any, q_covered, dist) in zip(quadrants, results):
-        n_covered = sum(q_covered[b].astype(int) for b in BANDS)
-        better = inside_any & ((dist > best[idx]) | ((dist == best[idx]) & (n_covered > best_n_covered[idx])))
-        take = idx[better]
-        best[take], best_n_covered[take], ccd[take], qid[take] = dist[better], n_covered[better], q_ccd, q_qid
-        for b in BANDS:
-            covered[b][take] = q_covered[b][better]
-    cat['ccd'], cat['qid'], cat['nan_dist_px'] = ccd, qid, best
-    for b in BANDS:
-        cat[f'{b}_covered'] = covered[b]
-    cat['on_ztf'] = np.logical_or.reduce([covered[b] for b in BANDS])
-    return cat[best >= 0].sort_values('PanSTARR_ID').reset_index(drop=True)
+    cov = ztf_coverage(cat.ra.to_numpy(), cat.dec.to_numpy(), field, quadrants, data_dir, n_jobs)
+    cat = pd.concat([cat.reset_index(drop=True), cov.drop(columns='on_image')], axis=1)
+    return cat[cov.on_image.values].sort_values('PanSTARR_ID').reset_index(drop=True)
 
 
 def match_ps1(obj: pd.DataFrame, ps1: pd.DataFrame, radius_arcsec: float = MATCH_ARCSEC) -> pd.DataFrame:

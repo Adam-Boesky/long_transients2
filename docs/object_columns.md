@@ -51,7 +51,10 @@ Tables built before commit 234ec43 also carry SExtractor `kron_auto`, `kron_auto
 | `ra`, `dec` | float64 | S/N-weighted mean position of the object's detections | `merge_bands` |
 | `{b}_idx` | int64 | row in `ztf_{b}.parquet`, -1 if not detected in b | `merge_bands` |
 | `{b}_sep` | float64 | separation of the b row from the object position, arcsec; NaN if absent | `merge_bands` |
-| `{b}_covered` | bool | on a valid pixel of some quadrant's b reference image | `object_coverage` |
+| `{b}_covered` | bool | on a valid pixel of some quadrant's b reference image | `ztf_coverage` |
+| `{b}_ccd`, `{b}_qid` | int16 / int8 | the covering b image chosen for the position: on valid pixels, then ≥ 5 px (`CLEAN_PX`) from a mask, then the deepest `MAGLIM`; -1 if none covers it | `ztf_coverage` |
+| `{b}_nan_dist_px` | float32 | distance to the nearest masked pixel in that image, px; 0 if none covers it | `ztf_coverage` |
+| `{b}_maglim` | float32 | that image's `MAGLIM`; NaN if none covers it | `ztf_coverage` |
 
 The photometry stays in the band tables; a table holds only its own data and the row indices of the tables it was made
 from, never anything about tables made from it.
@@ -78,10 +81,7 @@ Ours:
 | `n_rows` | int64 | stack rows of the object (after dropping repeated `uniquePspsSTid`) | `ps1_stack.clean` |
 | `n_primary_rows` | int64 | of those, rows with STACK_PRIMARY in any band | `ps1_stack.clean` |
 | `{b}_detected` | bool | not forced (`{b}infoFlag2 & 4` == 0), PSFFluxErr > 0, PSFFlux finite | `ps1_stack.clean` |
-| `ccd`, `qid` | int16 / int8 | ZTF quadrant chosen for the object (farthest from a masked pixel) | `ps1_field` |
-| `nan_dist_px` | float64 | distance to the nearest bad ZTF pixel in that quadrant, min over bands whose image contains it, px | `ps1_field` |
-| `{b}_covered` | bool | on a valid pixel of that quadrant's b image | `ps1_field` |
-| `on_ztf` | bool | `{b}_covered` in any band | `ps1_field` |
+| `{b}_covered`, `{b}_ccd`, `{b}_qid`, `{b}_nan_dist_px`, `{b}_maglim` | as in `ztf_objects` | what ZTF has at the PS1 position, per band, from the covering image chosen the same way | `ztf_coverage` (via `ps1_field`) |
 
 ## 3b. `matches.parquet`: one row per ZTF-PS1 match
 
@@ -105,8 +105,8 @@ Object-level:
 | `ra`, `dec` | float64 | O | ZTF object position; PS1 position for PS1-only rows |
 | `ztf_idx` | int64 | O | row in `ztf_objects.parquet`, -1 for PS1-only rows |
 | `ps1_idx` | int64 | O | row in `ps1.parquet`, -1 without a PS1 object |
-| `ccd`, `qid` | int16 / int8 | O | quadrant of the first detected band (g, r, i order); `ps1_field`'s quadrant for PS1-only rows |
-| `ps1_clear` | bool | O | the PS1 position is on valid ZTF pixels and > 5 px (`NAN_RADIUS_PX`) from a masked one (`on_ztf & nan_dist_px > 5`) |
+| `{b}_ccd`, `{b}_qid` | int16 / int8 | O | the ZTF image band b is judged in: the detection's own image, else the covering image `ztf_coverage` chose (valid, clean, deepest); -1 if none |
+| `ccd`, `qid` | int16 / int8 | O | a label quadrant for cutouts: the r-band one, else g, else i |
 | `ps1_objid` | int64 | N | PS1 `objID`, -1 without a PS1 object |
 | `ps1_ra`, `ps1_dec` | float64 | O | PS1 object's own position (`ps1.ra/dec`: stack, else mean) |
 | `ps1_qualityFlag` | int64 | N | `qualityFlag` (0 without a PS1 object) |
@@ -126,9 +126,9 @@ Per band, ZTF side (from `ztf_{b}.parquet` via `{b}_idx`; NaN where not detected
 | `{b}_ztf_kron`, `{b}_ztf_kron_err` | float64 | O | `zkron`, `zkron_err` (+ floor) |
 | `{b}_ztf_kron_masked` | float32 | O | `zkron_masked` |
 | `{b}_ztf_kron_rap` | float32 | O | `zkron_rap`, arcsec |
-| `{b}_ztf_nan_dist` | float32 | O | `nan_dist_px` of the detection |
-| `{b}_ztf_covered` | bool | O | `{b}_covered` (ZTF objects from `object_coverage`, PS1-only rows from `ps1_field`) |
-| `{b}_ztf_maglim` | float64 | N | `MAGLIM` of the object's quadrant in b, NaN if the quadrant has no b image |
+| `{b}_ztf_nan_dist` | float32 | O | distance to the nearest masked pixel in the band's image (`{b}_ccd`/`{b}_qid`), px |
+| `{b}_ztf_covered` | bool | O | some b image has the position on a valid pixel (`ztf_coverage`) |
+| `{b}_ztf_maglim` | float32 | N | `MAGLIM` of the band's image (`{b}_ccd`/`{b}_qid`), NaN if none covers it |
 
 Per band, PS1 side (from the PS1 object; NaN / 0 / -1 without one):
 

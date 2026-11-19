@@ -139,13 +139,13 @@ NO_CUTS = Cuts(bright_star_mask=False, sharp_max=None, sharp_point_only=False, p
 # ----------------------------------------------------------------------------------------------- loading
 
 BAND_COLS = ['ra', 'dec', 'ccd', 'qid', 'mag', 'magerr', 'snr', 'chi', 'sharp', 'flags', 'nan_dist_px', 'maglim', 'zkron', 'zkron_err', 'zkron_masked', 'zkron_rap']
-OBJ_COLS = ['ra', 'dec'] + [f'{b}_{c}' for b in BANDS for c in ('idx', 'covered')]
-PS1_COLS = (['PanSTARR_ID', 'ra', 'dec', 'ccd', 'qid', 'on_ztf', 'nan_dist_px', 'qualityFlag', 'nStackDetections',
+OBJ_COLS = ['ra', 'dec'] + [f'{b}_{c}' for b in BANDS for c in ('idx', 'covered', 'ccd', 'qid', 'nan_dist_px', 'maglim')]
+PS1_COLS = (['PanSTARR_ID', 'ra', 'dec', 'qualityFlag', 'nStackDetections',
              'projectionID', 'skyCellID']
             + [f'{b}_{c}' for b in BANDS for c in ('detected', 'projcell', 'skycell')]
             + [f'{b}{c}' for b in BANDS for c in ('PSFMag', 'PSFMagErr', 'KronMag', 'KronMagErr', 'PSFFlux', 'PSFFluxErr',
                                                   'infoFlag', 'infoFlag2', 'psfQfPerfect', 'sky', 'nFrames', 'KronRad')]
-            + [f'{b}_covered' for b in BANDS])
+            + [f'{b}_{c}' for b in BANDS for c in ('covered', 'ccd', 'qid', 'nan_dist_px', 'maglim')])
 
 
 def load_field(field_id: int, data_dir: Optional[str] = None) -> Tuple[Dict[str, pd.DataFrame], pd.DataFrame, pd.DataFrame]:
@@ -251,12 +251,14 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
     """One row per object: every ZTF object (with its PS1 match, if any) followed by every unmatched PS1 object.
 
     Object-level: `ra`, `dec` (the ZTF position for ZTF objects), `ps1_ra`, `ps1_dec` (the PS1 object's own position),
-    `ztf_idx`, `ps1_idx` (-1 without one), `ps1_objid` (PS1's objID, -1 without a PS1 object), `ccd`, `qid`,
-    `ps1_qualityFlag`, `ps1_nStackDetections`, `ps1_projcell`, `ps1_skycell` (and `{b}_ps1_projcell`, `{b}_ps1_skycell`: the skycell each band's row came from),
-    `ps1_clear` (the PS1 position
-    on valid ZTF pixels, NAN_RADIUS_PX from masked ones). Per band b: `{b}_ztf_det`, `{b}_ztf_psf/_err` (DAOPhot),
-    `{b}_ztf_kron/_err` (our Kron), `{b}_ztf_kron_masked`, `{b}_ztf_kron_rap` (our Kron aperture radius, "), `{b}_ztf_snr`, `{b}_ztf_chi`, `{b}_ztf_sharp`, `{b}_ztf_flags`,
-    `{b}_ztf_nan_dist`, `{b}_ztf_covered`, `{b}_ztf_maglim` (the reference image's); `{b}_ps1_detected` (a PS1
+    `ztf_idx`, `ps1_idx` (-1 without one), `ps1_objid` (PS1's objID, -1 without a PS1 object), `ps1_qualityFlag`,
+    `ps1_nStackDetections`, `ps1_projcell`, `ps1_skycell` (and `{b}_ps1_projcell`, `{b}_ps1_skycell`: the skycell each
+    band's row came from), `ccd`, `qid` (the r-band quadrant, else g, else i: a label for cutouts). Per band b: the ZTF
+    image the band is judged in, `{b}_ccd`, `{b}_qid` (the detection's own image; for a band without a detection the
+    covering image `field_tables.ztf_coverage` chose: on valid pixels, clean, deepest), with `{b}_ztf_covered`,
+    `{b}_ztf_nan_dist` (distance to its nearest masked pixel) and `{b}_ztf_maglim` (its nominal depth); `{b}_ztf_det`,
+    `{b}_ztf_psf/_err` (DAOPhot), `{b}_ztf_kron/_err` (our Kron), `{b}_ztf_kron_masked`, `{b}_ztf_kron_rap` (our Kron
+    aperture radius, "), `{b}_ztf_snr`, `{b}_ztf_chi`, `{b}_ztf_sharp`, `{b}_ztf_flags`; `{b}_ps1_detected` (a PS1
     detection, not forced photometry), `{b}_ps1_psf/_err`, `{b}_ps1_kron/_err`,
     `{b}_ps1_flux/_err`, `{b}_ps1_kron_rad` (PS1's Kron aperture radius, "), `{b}_ps1_snr` (flux / error), `{b}_ps1_meas` (a flux with a positive error, forced included),
     `{b}_ps1_infoFlag`, `{b}_ps1_infoFlag2` (0 without a PS1 object), `{b}_ps1_psfQfPerfect`, `{b}_ps1_sky` (residual
@@ -277,12 +279,6 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
     has_ps1 = ps1_idx >= 0
     pi = np.where(has_ps1, ps1_idx, 0)
     from_ps1 = lambda values, fill: np.where(has_ps1, values[pi], fill)
-    # the quadrant: from the first band with a detection for ZTF objects, from the PS1 query for PS1-only rows
-    ccd = np.full(n_z + n_p, -1, np.int16); qid = np.full(n_z + n_p, -1, np.int8)
-    for b in BANDS:
-        zi = obj[f'{b}_idx'].values; has = (zi >= 0) & (ccd[:n_z] < 0)
-        ccd[:n_z][has] = bands[b].ccd.values[zi[has]]; qid[:n_z][has] = bands[b].qid.values[zi[has]]
-    ccd[n_z:] = ps1.ccd.values[ps1_only]; qid[n_z:] = ps1.qid.values[ps1_only]
     cols = {
         'ra': np.concatenate([obj.ra.values, ps1.ra.values[ps1_only]]),
         'dec': np.concatenate([obj.dec.values, ps1.dec.values[ps1_only]]),
@@ -293,19 +289,20 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
         'ps1_nStackDetections': from_ps1(ps1.nStackDetections.fillna(0).values.astype(np.int16), 0),
         'ps1_projcell': from_ps1(ps1.projectionID.fillna(-1).values.astype(np.int32), -1),      # the skycell PS1's row came from
         'ps1_skycell': from_ps1(ps1.skyCellID.fillna(-1).values.astype(np.int16), -1),
-        'ps1_clear': from_ps1(ps1.on_ztf.values & (ps1.nan_dist_px.values > NAN_RADIUS_PX), False),
         'ps1_ra': from_ps1(ps1.ra.values, np.nan), 'ps1_dec': from_ps1(ps1.dec.values, np.nan),
-        'ccd': ccd, 'qid': qid,
     }
-    key = np.where(ccd >= 0, ccd.astype(np.int32) * 10 + qid, 0)
     nan_p = np.full(n_p, np.nan)
     for b in BANDS:
         cat = bands[b]; zi = obj[f'{b}_idx'].values; det = zi >= 0
         take = lambda col: np.concatenate([np.where(det, cat[col].values[np.clip(zi, 0, None)], np.nan), nan_p])
-        lut = np.full(200, np.nan)                                            # quadrant key ccd*10+qid -> MAGLIM
-        ml = cat.groupby(['ccd', 'qid']).maglim.first()
-        lut[np.array([c * 10 + q for c, q in ml.index])] = ml.values
+        # the image the band is judged in: the detection's own, else the covering image chosen at build time
+        image = lambda col, obj_col, dtype, fill: np.concatenate([
+            np.where(det, cat[col].values[np.clip(zi, 0, None)], obj[obj_col].values), ps1[obj_col].values[ps1_only]]).astype(dtype)
         cols.update({
+            f'{b}_ccd': image('ccd', f'{b}_ccd', np.int16, -1), f'{b}_qid': image('qid', f'{b}_qid', np.int8, -1),
+            f'{b}_ztf_nan_dist': image('nan_dist_px', f'{b}_nan_dist_px', np.float32, 0.0),
+            f'{b}_ztf_maglim': image('maglim', f'{b}_maglim', np.float32, np.nan),
+            f'{b}_ztf_covered': np.concatenate([obj[f'{b}_covered'].values, ps1[f'{b}_covered'].values[ps1_only]]),
             f'{b}_ztf_det': np.concatenate([det, np.zeros(n_p, bool)]),
             f'{b}_ztf_psf': take('mag'), f'{b}_ztf_psf_err': floor_err(take('magerr')),
             f'{b}_ztf_kron': take('zkron'), f'{b}_ztf_kron_err': floor_err(take('zkron_err')),
@@ -313,9 +310,6 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
             f'{b}_ztf_kron_rap': take('zkron_rap').astype(np.float32),
             f'{b}_ztf_snr': floor_snr(take('snr')), f'{b}_ztf_chi': take('chi').astype(np.float32), f'{b}_ztf_sharp': take('sharp').astype(np.float32),
             f'{b}_ztf_flags': np.nan_to_num(take('flags'), nan=0).astype(np.int16),
-            f'{b}_ztf_nan_dist': take('nan_dist_px').astype(np.float32),
-            f'{b}_ztf_covered': np.concatenate([obj[f'{b}_covered'].values, ps1[f'{b}_covered'].values[ps1_only]]),
-            f'{b}_ztf_maglim': np.where(ccd >= 0, lut[key], np.nan),
         })
         cols[f'{b}_ps1_detected'] = from_ps1(ps1[f'{b}_detected'].values.astype(bool), False)
         cols[f'{b}_ps1_projcell'] = from_ps1(ps1[f'{b}_projcell'].fillna(-1).values.astype(np.int32), -1)   # the skycell the band's row came from
@@ -339,6 +333,11 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
         at[missing] = nframes_at(ps1, b, cols['ra'][missing], cols['dec'][missing])
         cols[f'{b}_ps1_limit_nframes'] = at.astype(np.float32)
         cols[f'{b}_ps1_depth'] = ps1_stack.stack_depth(at, b).astype(np.float32)   # the nominal depth, a cap on the limit
+    ccd, qid = cols['r_ccd'].copy(), cols['r_qid'].copy()                           # the object's label quadrant: r, else g, else i
+    for b in ('g', 'i'):
+        fill = ccd < 0
+        ccd[fill], qid[fill] = cols[f'{b}_ccd'][fill], cols[f'{b}_qid'][fill]
+    cols['ccd'], cols['qid'] = ccd, qid
     return pd.DataFrame(cols, copy=False)
 
 # ----------------------------------------------------------------------------------------------- morphology
@@ -370,8 +369,8 @@ def ztf_checks(src: pd.DataFrame, b: str, point: np.ndarray) -> List[Tuple[str, 
     """ZTF's side of band b, (label, passes) in order. A detection is judged where it was measured; a non-detection
     stands for the reference image's limit at the PS1 position, so it needs the image and valid pixels there (without
     a PS1 object it has nothing to be compared with, and only coverage is checked)."""
-    det, has_ps1 = src[f'{b}_ztf_det'].values, src.ps1_idx.values >= 0
-    clear = np.where(det, src[f'{b}_ztf_nan_dist'].values > NAN_RADIUS_PX, ~has_ps1 | src['ps1_clear'].values)
+    det = src[f'{b}_ztf_det'].values
+    clear = src[f'{b}_ztf_nan_dist'].values > NAN_RADIUS_PX                           # the detection's image, or the limit's
     kron_ok = src[f'{b}_ztf_kron_masked'].values <= KRON_MAX_MASKED
     return [('ZTF image covers the position', det | src[f'{b}_ztf_covered'].values),
             ('ZTF: DAOPhot flags = 0', ~det | (src[f'{b}_ztf_flags'].values == 0)),
@@ -472,7 +471,7 @@ def completeness_references(src: pd.DataFrame, cuts: Cuts = Cuts()) -> Tuple[Dic
     n_z, n_p = sum(z_trust[b].astype(int) for b in BANDS), sum(p_trust[b].astype(int) for b in BANDS)
     stack_ok = (src.ps1_nStackDetections.values >= PS1_MIN_STACK_DETECTIONS) & ~_bits(src.ps1_qualityFlag.values, BAD_STACK | SUSPECT_STACK)
     z_ref = {b: z_trust[b] & (n_z >= 2) & position_ok & z_sharp_ok for b in BANDS}                                   # PS1's limit: ZTF's detections
-    p_ref = {b: p_trust[b] & (n_p >= 2) & position_ok & stack_ok & src.ps1_clear.values & src[f'{b}_ztf_covered'].values for b in BANDS}
+    p_ref = {b: p_trust[b] & (n_p >= 2) & position_ok & stack_ok & src[f'{b}_ztf_covered'].values & (src[f'{b}_ztf_nan_dist'].values > NAN_RADIUS_PX) for b in BANDS}
     return z_ref, p_ref
 
 
@@ -487,21 +486,23 @@ def completeness_limits(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
     pipeline would use in place of the limit: a ZTF DAOPhot detection at any S/N, a PS1 detection or forced flux > 0
     (a PS1 magnitude). Caps: ZTF's MAGLIM per quadrant, PS1's published stack depth per quadrant and `{b}_ps1_depth`
     per object."""
-    key = np.where(src.ccd.values >= 0, src.ccd.values.astype(np.int32) * 10 + src.qid.values, 0)
-    quads = sorted({(int(c), int(q)) for c, q in zip(src.ccd.values[src.ccd.values >= 0], src.qid.values[src.ccd.values >= 0])})
     z_refs, p_refs = completeness_references(src, cuts)
     cols = {}
     for b in BANDS:
-        z_ref, p_ref = z_refs[b], p_refs[b]
-        z_cap = {q: float(v) for q, v in src.groupby(['ccd', 'qid'])[f'{b}_ztf_maglim'].first().items() if q in quads}
+        ccd, qid = src[f'{b}_ccd'].values, src[f'{b}_qid'].values                     # the image the band is judged in
+        has = ccd >= 0
+        key = np.where(has, ccd.astype(np.int32) * 10 + qid, 0)
+        quads = sorted({(int(c), int(q)) for c, q in zip(ccd[has], qid[has])})
+        z_cap = {(k // 10, k % 10): float(v) for k, v in pd.Series(src[f'{b}_ztf_maglim'].values[has]).groupby(key[has]).first().items()}
         p_cap = {q: ps1_stack.STACK_5SIG[b] for q in quads}
+        z_ref, p_ref = z_refs[b], p_refs[b]
         for kind in ('psf', 'kron'):
             for survey, ref, rec, mag, cap in (('ps1', z_ref, np.isfinite(src[f'{b}_ps1_psf'].values), src[f'{b}_ztf_{kind}'].values, p_cap),
                                                ('ztf', p_ref, src[f'{b}_ztf_det'].values, src[f'{b}_ps1_{kind}'].values, z_cap)):
                 lut = np.full(200, np.nan)
                 for (c, q), v in completeness_limit(np.where(ref, mag, np.nan), rec, key, cap).items():
                     lut[c * 10 + q] = v
-                lim = np.where(src.ccd.values >= 0, lut[key], np.nan)
+                lim = np.where(has, lut[key], np.nan)
                 cols[f'{b}_{survey}_limit_{kind}'] = (np.fmin(lim, src[f'{b}_ps1_depth'].values) if survey == 'ps1' else lim).astype(np.float32)
     return _attach(src, cols)
 

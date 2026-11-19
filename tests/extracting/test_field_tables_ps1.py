@@ -36,46 +36,55 @@ def _sky(wcs, x, y):
 
 @pytest.fixture
 def field(monkeypatch):
-    """Quadrant A has a bad pixel 3 px from the overlap object; B has one 15 px away, plus a pixel masked in g only."""
+    """Quadrant A has a bad pixel 3 px from the overlap object; B has one 15 px away, plus a pixel masked in g only. A is
+    the deeper image (MAGLIM 22 against 21)."""
     near_x, near_y = 80, 50                                          # A-pixel of the overlap object
     ra_o, dec_o = _sky(WCS_A, near_x, near_y)
     bx, by = (int(round(float(v))) for v in WCS_B.world_to_pixel_values(ra_o, dec_o))
     tie_ax, tie_ay = 85, 20                                          # the tie object, masked in every band of A
     ra_t, dec_t = _sky(WCS_A, tie_ax, tie_ay)
     tbx, tby = (int(round(float(v))) for v in WCS_B.world_to_pixel_values(ra_t, dec_t))
+    ra_c, dec_c = _sky(WCS_A, 70, 80)                                # a clean overlap object: far from every mask in both
     masks = {
         (1, 1): {b: (_bad((near_x + 3, near_y), (tie_ax, tie_ay)), WCS_A) for b in 'gri'},
         (1, 2): {'g': (_bad((bx - 15, by), (tbx, tby)), WCS_B), 'r': (_bad((bx - 15, by)), WCS_B),
                  'i': (_bad((bx - 15, by)), WCS_B)},
     }
     monkeypatch.setattr(ft, 'quadrant_mask', lambda field, ccd, qid, band, data_dir=None: masks[(ccd, qid)][band])
+    monkeypatch.setattr(ft, '_quadrant_maglim', lambda field, ccd, qid, band, data_dir=None: {(1, 1): 22.0, (1, 2): 21.0}[(ccd, qid)])
     cat = pd.DataFrame({
-        'PanSTARR_ID': [1, 2, 3, 4],
-        'ra': [_sky(WCS_A, 10, 50)[0], ra_o, ra_t, 11.0],            # A only, overlap, tie, outside both
-        'dec': [_sky(WCS_A, 10, 50)[1], dec_o, dec_t, 0.0],
+        'PanSTARR_ID': [1, 2, 3, 4, 5],
+        'ra': [_sky(WCS_A, 10, 50)[0], ra_o, ra_t, 11.0, ra_c],       # A only, overlap near a mask in A, tie, outside both, clean overlap
+        'dec': [_sky(WCS_A, 10, 50)[1], dec_o, dec_t, 0.0, dec_c],
     })
     monkeypatch.setattr(ft.ps1_stack, 'objects', lambda ra, dec, directory=None: cat.copy())
     return ft.ps1_field(0, [(1, 1), (1, 2)]).set_index('PanSTARR_ID')
 
 
 def test_objects_outside_every_image_are_dropped_and_the_rest_kept(field):
-    assert sorted(field.index) == [1, 2, 3]
+    assert sorted(field.index) == [1, 2, 3, 5]
 
 
-def test_an_object_in_one_image_takes_that_quadrant(field):
-    assert (field.loc[1, 'ccd'], field.loc[1, 'qid']) == (1, 1)
-    assert field.loc[1, 'on_ztf'] and all(field.loc[1, f'{b}_covered'] for b in 'gri')
+def test_an_object_in_one_image_takes_that_quadrant_in_every_band(field):
+    for b in 'gri':
+        assert (field.loc[1, f'{b}_ccd'], field.loc[1, f'{b}_qid']) == (1, 1) and field.loc[1, f'{b}_covered']
+        assert field.loc[1, f'{b}_maglim'] == 22.0
 
 
-def test_an_overlap_object_takes_the_quadrant_where_it_is_farthest_from_a_masked_pixel(field):
-    assert (field.loc[2, 'ccd'], field.loc[2, 'qid']) == (1, 2)
-    assert field.loc[2, 'nan_dist_px'] == pytest.approx(15)
+def test_a_clean_image_beats_a_deeper_one_where_the_position_is_near_a_mask(field):
+    for b in 'gri':                                                  # A is deeper but its copy is 3 px from a mask
+        assert (field.loc[2, f'{b}_ccd'], field.loc[2, f'{b}_qid']) == (1, 2)
+        assert field.loc[2, f'{b}_nan_dist_px'] == pytest.approx(15) and field.loc[2, f'{b}_maglim'] == 21.0
 
 
-def test_a_tie_on_masked_pixels_goes_to_the_quadrant_with_more_valid_bands(field):
-    assert field.loc[3, 'nan_dist_px'] == 0
-    assert (field.loc[3, 'ccd'], field.loc[3, 'qid']) == (1, 2)
-    assert not field.loc[3, 'g_covered'] and field.loc[3, 'r_covered'] and field.loc[3, 'on_ztf']
+def test_among_clean_images_the_deeper_one_wins(field):
+    for b in 'gri':
+        assert (field.loc[5, f'{b}_ccd'], field.loc[5, f'{b}_qid']) == (1, 1) and field.loc[5, f'{b}_maglim'] == 22.0
+
+
+def test_coverage_is_decided_band_by_band(field):
+    assert not field.loc[3, 'g_covered'] and field.loc[3, 'g_ccd'] == -1 and np.isnan(field.loc[3, 'g_maglim'])   # masked in g everywhere
+    assert field.loc[3, 'r_covered'] and (field.loc[3, 'r_ccd'], field.loc[3, 'r_qid']) == (1, 2)                 # B's r is clean there
 
 
 def _band(ra, dec, snr):

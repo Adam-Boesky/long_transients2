@@ -20,7 +20,7 @@ PS1 = {'D': (1e-5, 1e-6, 0, 0, 1.0), 'L': (3e-6, 1e-6, 0, 0, 1.0), 'F': (-1e-6, 
 
 def object_row(ztf: str, ps1: str, n_stack_detections: int = 3) -> dict:
     """One object from three-letter g, r, i status codes per survey, in the columns `object_table` writes."""
-    r = {'ra': 10.0, 'dec': 20.0, 'ccd': 1, 'qid': 1, 'ps1_qualityFlag': 0, 'ps1_clear': True, 'ps1_skycell_bad': False, 'ps1_catalog_missing': False, **{f'{b}_ps1_covered': True for b in BANDS}, **{f'{b}_ps1_skycell_bad': False for b in BANDS},
+    r = {'ra': 10.0, 'dec': 20.0, 'ccd': 1, 'qid': 1, **{f'{b}_{c}': v for b in BANDS for c, v in (('ccd', 1), ('qid', 1))}, 'ps1_qualityFlag': 0, 'ps1_skycell_bad': False, 'ps1_catalog_missing': False, **{f'{b}_ps1_covered': True for b in BANDS}, **{f'{b}_ps1_skycell_bad': False for b in BANDS},
          'ps1_nStackDetections': n_stack_detections,
          'ztf_idx': -1 if set(ztf) <= {'-', 'N'} else 0, 'ps1_idx': -1 if set(ps1) == {'-'} else 0,
          'gaia_pm_sig': np.nan, 'gaia_parallax_over_error': np.nan, 'bright_star_d_over_R': np.inf, 'in_star_spike': False, 'bright_star_masked': False,
