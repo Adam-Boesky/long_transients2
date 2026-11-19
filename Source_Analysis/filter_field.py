@@ -265,8 +265,7 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
     sky, Jy/arcsec^2), `{b}_ps1_nFrames` (the object's own stack input frames, NaN without a PS1 object),
     `{b}_ps1_limit_nframes` (its own if at least one, else `nframes_at`) and `{b}_ps1_depth` (its `ps1_stack.stack_depth`,
     the nominal PS1 depth).
-    `completeness_limits` adds the limits, `assign_catalogs` picks `{b}_ztf_limit` / `{b}_ps1_limit` from them by the
-    magnitude a band compares.
+    `completeness_limits` adds the limits `{b}_ztf_limit` / `{b}_ps1_limit`.
 
     Every error and S/N here carries the ERR_FLOOR_MAG calibration floor (`floor_err`, `floor_flux_err`,
     `floor_snr`); the field tables keep the catalogs' own values.
@@ -475,17 +474,19 @@ def completeness_references(src: pd.DataFrame, cuts: Cuts = Cuts()) -> Tuple[Dic
 
 
 def completeness_limits(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
-    """`{b}_ztf_limit_psf/_kron` and `{b}_ps1_limit_psf/_kron`: each survey's `completeness_limit` per quadrant, in
-    PSF and in Kron magnitude, against the other survey's detections that would reach the |sigma| step on their own
-    side: passing the reference side's quality and confident checks (`ztf_checks` / `ps1_checks`, the `real_checks`
-    that read only the reference survey, under `cuts`) at S/N >= SNR_MIN in at least two of its bands, and the Gaia
-    population cuts. That is the population the one-sided candidates are drawn from. Checks that read the
-    recovering survey (the PS1 checks for a ZTF reference, sharpness for a PS1 reference) would remove recovered objects
-    only and are left out. Recovery is a measurement of the band by the other survey at the 1" match, i.e. what the
-    pipeline would use in place of the limit: a ZTF DAOPhot detection at any S/N, a PS1 detection or forced flux > 0
-    (a PS1 magnitude). Caps: ZTF's MAGLIM per quadrant, PS1's published stack depth per quadrant and `{b}_ps1_depth`
-    per object."""
+    """`{b}_ztf_limit` and `{b}_ps1_limit`: each survey's `completeness_limit` per quadrant of the band
+    (`{b}_ccd`/`{b}_qid`) against the other survey's detections that would reach the |sigma| step on their own side:
+    passing the reference side's quality and confident checks (`ztf_checks` / `ps1_checks`, the `real_checks` that
+    read only the reference survey, under `cuts`) at S/N >= SNR_MIN in at least two of its bands, and the Gaia
+    population cuts. That is the population the one-sided candidates are drawn from. Each reference object is binned
+    by the magnitude the pipeline would compare for it (`reference_magnitude`: Kron for extended objects, PSF
+    otherwise), so the limit is in the same mixed magnitude system as the objects judged against it. Checks that read
+    the recovering survey would remove recovered objects only and are left out. Recovery is a measurement of the band
+    by the other survey at the 1" match, i.e. what the pipeline would use in place of the limit: a ZTF DAOPhot
+    detection at any S/N, a PS1 detection or forced flux > 0 (a PS1 magnitude). Caps: ZTF's MAGLIM per quadrant,
+    PS1's published stack depth per quadrant and `{b}_ps1_depth` per object."""
     z_refs, p_refs = completeness_references(src, cuts)
+    point = point_source(src)
     cols = {}
     for b in BANDS:
         ccd, qid = src[f'{b}_ccd'].values, src[f'{b}_qid'].values                     # the image the band is judged in
@@ -494,27 +495,48 @@ def completeness_limits(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
         quads = sorted({(int(c), int(q)) for c, q in zip(ccd[has], qid[has])})
         z_cap = {(k // 10, k % 10): float(v) for k, v in pd.Series(src[f'{b}_ztf_maglim'].values[has]).groupby(key[has]).first().items()}
         p_cap = {q: ps1_stack.STACK_5SIG[b] for q in quads}
-        z_ref, p_ref = z_refs[b], p_refs[b]
-        for kind in ('psf', 'kron'):
-            for survey, ref, rec, mag, cap in (('ps1', z_ref, np.isfinite(src[f'{b}_ps1_psf'].values), src[f'{b}_ztf_{kind}'].values, p_cap),
-                                               ('ztf', p_ref, src[f'{b}_ztf_det'].values, src[f'{b}_ps1_{kind}'].values, z_cap)):
-                lut = np.full(200, np.nan)
-                for (c, q), v in completeness_limit(np.where(ref, mag, np.nan), rec, key, cap).items():
-                    lut[c * 10 + q] = v
-                lim = np.where(has, lut[key], np.nan)
-                cols[f'{b}_{survey}_limit_{kind}'] = (np.fmin(lim, src[f'{b}_ps1_depth'].values) if survey == 'ps1' else lim).astype(np.float32)
+        for survey, ref, rec, mag, cap in (('ps1', z_refs[b], np.isfinite(src[f'{b}_ps1_psf'].values), reference_magnitude(src, b, 'ztf', point), p_cap),
+                                           ('ztf', p_refs[b], src[f'{b}_ztf_det'].values, reference_magnitude(src, b, 'ps1', point), z_cap)):
+            lut = np.full(200, np.nan)
+            for (c, q), v in completeness_limit(np.where(ref, mag, np.nan), rec, key, cap).items():
+                lut[c * 10 + q] = v
+            lim = np.where(has, lut[key], np.nan)
+            cols[f'{b}_{survey}_limit'] = (np.fmin(lim, src[f'{b}_ps1_depth'].values) if survey == 'ps1' else lim).astype(np.float32)
     return _attach(src, cols)
+
+
+def reference_magnitude(src: pd.DataFrame, b: str, survey: str, point: np.ndarray) -> np.ndarray:
+    """A survey's magnitude of each object in band b as the pipeline would compare it: Kron for an extended object
+    where the survey has one, PSF otherwise."""
+    kron, psf = src[f'{b}_{survey}_kron'].values, src[f'{b}_{survey}_psf'].values
+    return np.where(~point & np.isfinite(kron), kron, psf)
+
+
+def compared_magnitudes(src: pd.DataFrame, b: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(ZTF magnitude, its error, PS1 magnitude, its error) that band b compares, from the stored magnitudes and the
+    band's flags: PSF or Kron by `{b}_use_psf`; on a limit side the survey's own sub-threshold measurement where it
+    is brighter than the limit (`{b}_ztf_use_meas`, `{b}_ps1_use_forced`), else the limit with zero error."""
+    psf, cat = src[f'{b}_use_psf'].values, src[f'{b}_cat'].values
+    pick = lambda side, kind: np.where(psf, src[f'{b}_{side}_psf{kind}'].values, src[f'{b}_{side}_kron{kind}'].values)
+    z, z_err, p, p_err = pick('ztf', ''), pick('ztf', '_err'), pick('ps1', ''), pick('ps1', '_err')
+    z_lim, p_lim = src[f'{b}_ztf_limit'].values, src[f'{b}_ps1_limit'].values
+    z_meas, forced = src[f'{b}_ztf_use_meas'].values, src[f'{b}_ps1_use_forced'].values
+    z_out = np.where(cat == 2, np.where(z_meas, z, z_lim), z)
+    z_err_out = np.where(cat == 2, np.where(z_meas, z_err, 0.0), z_err)
+    p_out = np.where(cat == 1, np.where(forced, p, p_lim), p)
+    p_err_out = np.where(cat == 1, np.where(forced, p_err, 0.0), p_err)
+    return z_out, z_err_out, p_out, p_err_out
 
 
 def assign_catalogs(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
     """`catalog` per object; per band `{b}_ztf_status`, `{b}_ps1_status`, `{b}_cat` (the comparison), `point_source`
-    (one morphology per object), `{b}_extendedness`, `{b}_use_kron` and the magnitudes that enter dmag, `{b}_ztf_use/_err`
-    and `{b}_ps1_use/_err`; `catalog` and `catalog_reason` from `object_catalog`. An in_both object keeps only its
+    (one morphology per object), `{b}_extendedness`, `{b}_use_psf` (the band compares PSF magnitudes, else Kron) and
+    `{b}_ztf_use_meas` / `{b}_ps1_use_forced` (a limit side uses its own sub-threshold measurement); the magnitudes a
+    band compares follow from these (`compared_magnitudes`); `catalog` and `catalog_reason` from `object_catalog`. An in_both object keeps only its
     two-sided bands (`{b}_cat` 0); its one-sided bands are dropped (-1), as is every band of an object that is not
     comparable. On the undetected side of a one-sided band, either survey uses its own sub-threshold measurement
     where it has one brighter than its limit (`{b}_ps1_use_forced`, `{b}_ztf_use_meas` True; PS1's forced photometry,
-    a ZTF detection under SNR_MIN), else the limit (`{b}_ps1_limit`, `{b}_ztf_limit`: the completeness limit in the
-    magnitude the band compares, Kron for extended objects, PSF otherwise). A measurement, however noisy, says more
+    a ZTF detection under SNR_MIN), else the limit (`{b}_ps1_limit`, `{b}_ztf_limit`). A measurement, however noisy, says more
     than a limit deeper than it.
 
     Extended sources (`point_source`) use Kron magnitudes, point sources PSF; PSF where a side that needs one lacks a Kron.
@@ -533,23 +555,13 @@ def assign_catalogs(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
         has_kron = ((cat == 2) | np.isfinite(src[f'{b}_ztf_kron'].values)) & ((cat == 1) | np.isfinite(src[f'{b}_ps1_kron'].values))
         use_kron = (cat >= 0) & ~point & has_kron
         z_mag = np.where(use_kron, src[f'{b}_ztf_kron'].values, src[f'{b}_ztf_psf'].values)
-        z_err = np.where(use_kron, src[f'{b}_ztf_kron_err'].values, src[f'{b}_ztf_psf_err'].values)
         p_mag = np.where(use_kron, src[f'{b}_ps1_kron'].values, src[f'{b}_ps1_psf'].values)
-        p_err = np.where(use_kron, src[f'{b}_ps1_kron_err'].values, src[f'{b}_ps1_psf_err'].values)
-        limit = np.where(use_kron, src[f'{b}_ps1_limit_kron'].values, src[f'{b}_ps1_limit_psf'].values)
-        forced = (cat == 1) & (p == 'L') & np.isfinite(p_mag) & (p_mag < limit)
-        z_limit = np.where(use_kron, src[f'{b}_ztf_limit_kron'].values, src[f'{b}_ztf_limit_psf'].values)
-        z_meas = (cat == 2) & (z == 'L') & np.isfinite(z_mag) & (z_mag < z_limit)
+        forced = (cat == 1) & (p == 'L') & np.isfinite(p_mag) & (p_mag < src[f'{b}_ps1_limit'].values)
+        z_meas = (cat == 2) & (z == 'L') & np.isfinite(z_mag) & (z_mag < src[f'{b}_ztf_limit'].values)
         cols.update({
             f'{b}_ztf_status': z, f'{b}_ps1_status': p, f'{b}_cat': cat,
-            f'{b}_extendedness': extendedness(src, b),
-            f'{b}_use_kron': use_kron, f'{b}_ztf_limit': z_limit, f'{b}_ps1_limit': limit,
-            f'{b}_ztf_use': np.where(cat == 2, np.where(z_meas, z_mag, z_limit), z_mag),
-            f'{b}_ztf_use_err': np.where(cat == 2, np.where(z_meas, z_err, 0.0), z_err),
-            f'{b}_ztf_use_meas': z_meas,
-            f'{b}_ps1_use': np.where(cat == 1, np.where(forced, p_mag, limit), p_mag),
-            f'{b}_ps1_use_err': np.where(cat == 1, np.where(forced, p_err, 0.0), p_err),
-            f'{b}_ps1_use_forced': forced,
+            f'{b}_extendedness': extendedness(src, b), f'{b}_use_psf': ~use_kron,
+            f'{b}_ztf_use_meas': z_meas, f'{b}_ps1_use_forced': forced,
         })
     return _attach(src, cols)
 
@@ -558,10 +570,9 @@ def envelope_tables(src: pd.DataFrame, use: Optional[Dict[str, np.ndarray]] = No
     ({band: rows}), only those rows (the pipeline passes the bands that reach the |sigma| step)."""
     tabs = {}
     for b in BANDS:
-        rows = (src[f'{b}_cat'].values == 0) & np.isfinite(src[f'{b}_ztf_use'].values) & np.isfinite(src[f'{b}_ps1_use'].values)
-        s = src[rows & (use[b] if use is not None else True)]
-        tabs[b] = Table({f'ZTF_{b}PSFMag': s[f'{b}_ztf_use'].values, f'ZTF_{b}PSFMagErr': s[f'{b}_ztf_use_err'].values,
-                         f'PSTARR_{b}PSFMag': s[f'{b}_ps1_use'].values, f'PSTARR_{b}PSFMagErr': s[f'{b}_ps1_use_err'].values})
+        z, z_err, p, p_err = compared_magnitudes(src, b)
+        rows = (src[f'{b}_cat'].values == 0) & np.isfinite(z) & np.isfinite(p) & (use[b] if use is not None else True)
+        tabs[b] = Table({f'ZTF_{b}PSFMag': z[rows], f'ZTF_{b}PSFMagErr': z_err[rows], f'PSTARR_{b}PSFMag': p[rows], f'PSTARR_{b}PSFMagErr': p_err[rows]})
     return tabs
 
 
@@ -573,7 +584,7 @@ def clip_envelope_sample(src: pd.DataFrame, use: Dict[str, np.ndarray], k_mad: f
     outliers (10-60 MAD-sigma out) that otherwise set the envelope's +-3 sigma edges, not the population's tails."""
     out = {}
     for b in BANDS:
-        z, p = src[f'{b}_ztf_use'].values.astype(float), src[f'{b}_ps1_use'].values.astype(float)
+        z, _, p, _ = compared_magnitudes(src, b)
         keep = use[b] & (src[f'{b}_cat'].values == 0) & np.isfinite(z) & np.isfinite(p)
         bins, d = np.floor((z + p) / 2 / bin_mag), z - p
         while True:
@@ -746,7 +757,7 @@ def annotate_sigma(src: pd.DataFrame, envelopes: Dict[str, Envelope_KDE]) -> pd.
     measurement standing in for a limit is a measurement and stays two-sided."""
     cols = {}
     for b in BANDS:
-        z, p = src[f'{b}_ztf_use'].values.astype(float), src[f'{b}_ps1_use'].values.astype(float)
+        z, _, p, _ = compared_magnitudes(src, b)
         dmag = z - p
         sigma, capped = envelopes[b].sigma((z + p) / 2, dmag)
         cat = src[f'{b}_cat'].values

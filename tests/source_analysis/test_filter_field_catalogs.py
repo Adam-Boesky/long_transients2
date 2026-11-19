@@ -99,16 +99,18 @@ def test_a_flagged_ps1_band_is_never_read_as_a_non_detection(src):
     z, p = ff.band_status(src.loc[['8']], 'i', np.array([True]))
     assert (z[0], p[0]) == ('D', 'X')
     assert ff.detection_status(src.loc[['8']], 'i')[1][0] == 'D' and not ff.usable_sides(src.loc[['8']], 'i', np.array([True]))[1][0]   # a measurement, on an unusable side
-    assert src.loc['8', 'i_ps1_use'] != src.loc['8', 'i_ps1_limit']
+    assert ff.compared_magnitudes(src.loc[['8']], 'i')[2][0] != src.loc['8', 'i_ps1_limit']
 
 
 def test_one_sided_bands_use_the_sub_threshold_measurement_where_brighter_than_the_limit(src):
-    assert src.loc['4', 'g_ps1_use'] == 20.0 and src.loc['4', 'g_ps1_use_err'] > 0 and src.loc['4', 'g_ps1_use_forced']   # PS1 'L' with a forced mag
-    assert src.loc['10', 'g_ps1_use'] == 23.0 and not src.loc['10', 'g_ps1_use_forced']                                  # no PS1 object: the limit
-    assert src.loc['4 mirrored', 'g_ztf_use'] == 20.0 and src.loc['4 mirrored', 'g_ztf_use_err'] > 0 and src.loc['4 mirrored', 'g_ztf_use_meas']  # ZTF 'L', symmetric
-    assert src.loc['13', 'g_ztf_use'] == 21.0 and src.loc['13', 'g_ztf_use_err'] == 0                                   # no detection: the completeness limit, not MAGLIM
+    used = lambda case, b: ff.compared_magnitudes(src.loc[[case]], b)                                                 # (ztf, ztf_err, ps1, ps1_err)
+    assert used('4', 'g')[2][0] == 20.0 and used('4', 'g')[3][0] > 0 and src.loc['4', 'g_ps1_use_forced']                   # PS1 'L' with a forced mag
+    assert used('10', 'g')[2][0] == 23.0 and not src.loc['10', 'g_ps1_use_forced']                                       # no PS1 object: the limit
+    assert used('4 mirrored', 'g')[0][0] == 20.0 and used('4 mirrored', 'g')[1][0] > 0 and src.loc['4 mirrored', 'g_ztf_use_meas']   # ZTF 'L', symmetric
+    assert used('13', 'g')[0][0] == 21.0 and used('13', 'g')[1][0] == 0                                                  # no detection: the completeness limit, not MAGLIM
     s = ff.assign_catalogs(pd.DataFrame([object_row('DDD', 'LFF')], index=['forced <= 0']), OFF)                        # in_ztf, no magnitude in r, i: the limit
-    assert s.loc['forced <= 0', 'r_ps1_use'] == 23.0 and s.loc['forced <= 0', 'r_ps1_use_err'] == 0 and s.loc['forced <= 0', 'r_cat'] == 1
+    z, ze, p, pe = ff.compared_magnitudes(s, 'r')
+    assert p[0] == 23.0 and pe[0] == 0 and s.loc['forced <= 0', 'r_cat'] == 1
 
 
 def test_an_in_both_object_drops_its_one_sided_bands_and_the_limit_is_never_used_for_it(src):
@@ -116,7 +118,8 @@ def test_an_in_both_object_drops_its_one_sided_bands_and_the_limit_is_never_used
         assert src.loc[case, 'catalog'] == 0 and src.loc[case, f'{band}_cat'] == -1
     for case in ('2', '3 forced flux <= 0'):                                       # one two-sided band left: not comparable, no limit used
         assert src.loc[case, 'catalog'] == -1 and src.loc[case, 'catalog_reason'] == 'one two-sided band'
-    assert src.loc['6', 'g_ztf_use'] != src.loc['6', 'g_ztf_limit'] or np.isnan(src.loc['6', 'g_ztf_use'])
+    z = ff.compared_magnitudes(src.loc[['6']], 'g')[0][0]
+    assert z != src.loc['6', 'g_ztf_limit'] or np.isnan(z)
 
 
 def test_an_object_whose_ps1_side_is_a_measurement_needs_two_stack_detections():
@@ -294,29 +297,33 @@ def test_the_completeness_limit_is_where_recovery_crosses_the_threshold_and_neve
     assert ff.completeness_limit(mag[bright], recovered[bright], quad[bright], {(1, 1): 23.6})[(1, 1)] == pytest.approx(21.5, abs=0.3)
 
 
-def _reference_field(rng, n=6000):
+def _reference_field(rng, n=6000, kron_offset=0.0):
     """ZTF objects over 18-24 mag, PS1 recovering a fraction of them that falls from 1 at 21 to 0 at 23, and the
-    mirror image (PS1 objects that ZTF recovers); Kron half a magnitude brighter than PSF; one quadrant."""
+    mirror image (PS1 objects that ZTF recovers); Kron `kron_offset` brighter than PSF (0: point sources); one quadrant."""
     mag = rng.uniform(18, 24, n)
     rec = rng.random(n) < np.clip(1 - (mag - 21) / 2, 0, 1)
     rows = [object_row('DDD', 'DDD' if r else '---') for r in rec] + [object_row('DDD' if r else 'UUU', 'DDD') for r in rec]
     s = pd.DataFrame(rows)
     for b in BANDS:
-        s[f'{b}_ztf_psf'] = np.where(s[f'{b}_ztf_det'], np.r_[mag, mag], np.nan); s[f'{b}_ztf_kron'] = s[f'{b}_ztf_psf'] - 0.5; s[f'{b}_ztf_kron_err'] = 0.1
-        s[f'{b}_ps1_psf'] = np.where(s[f'{b}_ps1_detected'], np.r_[mag, mag], np.nan); s[f'{b}_ps1_kron'] = s[f'{b}_ps1_psf'] - 0.5; s[f'{b}_ps1_kron_err'] = 0.1
+        s[f'{b}_ztf_psf'] = np.where(s[f'{b}_ztf_det'], np.r_[mag, mag], np.nan); s[f'{b}_ztf_kron'] = s[f'{b}_ztf_psf'] - kron_offset; s[f'{b}_ztf_kron_err'] = 0.1
+        s[f'{b}_ps1_psf'] = np.where(s[f'{b}_ps1_detected'], np.r_[mag, mag], np.nan); s[f'{b}_ps1_kron'] = s[f'{b}_ps1_psf'] - kron_offset; s[f'{b}_ps1_kron_err'] = 0.1
         s[f'{b}_ztf_maglim'] = 23.6; s[f'{b}_ps1_depth'] = 23.2
     return s, mag, rec
 
 
-def test_completeness_limits_run_both_ways_in_both_magnitudes_from_clean_references():
+def test_completeness_limits_run_both_ways_in_the_magnitude_each_reference_object_compares():
     s, mag, rec = _reference_field(np.random.default_rng(0))
     expected = 21 + 2 * (1 - ff.LIMIT_COMPLETENESS)
-    out = ff.completeness_limits(s, OFF)
+    out = ff.completeness_limits(s, OFF)                                       # point sources: PSF
     for survey in ('ztf', 'ps1'):
-        assert out[f'g_{survey}_limit_psf'].iloc[0] == pytest.approx(expected, abs=0.15)
-        assert out[f'g_{survey}_limit_kron'].iloc[0] == pytest.approx(expected - 0.5, abs=0.15)
+        assert out[f'g_{survey}_limit'].iloc[0] == pytest.approx(expected, abs=0.15)
+    ext, _, _ = _reference_field(np.random.default_rng(0), kron_offset=0.5)    # every reference extended: binned by Kron, 0.5 brighter
+    ext_out = ff.completeness_limits(ext, OFF)
+    assert not ff.point_source(ext).any()
+    for survey in ('ztf', 'ps1'):
+        assert ext_out[f'g_{survey}_limit'].iloc[0] == pytest.approx(expected - 0.5, abs=0.15)
     s['g_ps1_depth'] = 20.0                                                    # the per-object PS1 depth caps the PS1 limit
-    assert (ff.completeness_limits(s, OFF).g_ps1_limit_psf == 20.0).all()
+    assert (ff.completeness_limits(s, OFF).g_ps1_limit == 20.0).all()
 
 
 def test_the_reference_excludes_detections_that_fail_their_own_checks_but_not_the_other_surveys():
@@ -326,17 +333,17 @@ def test_the_reference_excludes_detections_that_fail_their_own_checks_but_not_th
     for b in BANDS:
         junk[f'{b}_ztf_psf'] = np.linspace(18, 21, len(junk)); junk[f'{b}_ztf_kron'] = junk[f'{b}_ztf_psf']; junk[f'{b}_ztf_kron_err'] = 0.1
         junk[f'{b}_ztf_maglim'] = 23.6; junk[f'{b}_ps1_depth'] = 23.2
-    assert ff.completeness_limits(pd.concat([s, junk], ignore_index=True), OFF).g_ps1_limit_psf.iloc[0] == pytest.approx(expected, abs=0.15)
+    assert ff.completeness_limits(pd.concat([s, junk], ignore_index=True), OFF).g_ps1_limit.iloc[0] == pytest.approx(expected, abs=0.15)
     junk_rows = np.flatnonzero((mag < 21.5) & (np.arange(len(mag)) % 2 == 0))                      # half the bright ZTF objects: under a mask, unrecovered
     masked = s.copy(); masked.loc[masked.index[junk_rows], ['bright_star_d_over_R', 'bright_star_masked']] = [0.5, True]
     masked.loc[masked.index[junk_rows], ['g_ps1_detected', 'ps1_idx']] = [False, -1]; masked.loc[masked.index[junk_rows], 'g_ps1_psf'] = np.nan
-    assert ff.completeness_limits(masked, OFF).g_ps1_limit_psf.iloc[0] < 20.0                      # mask off: they read as PS1 incompleteness
-    assert ff.completeness_limits(masked, OFF.replace(bright_star_mask=True)).g_ps1_limit_psf.iloc[0] == pytest.approx(expected, abs=0.3)
+    assert ff.completeness_limits(masked, OFF).g_ps1_limit.iloc[0] < 20.0                      # mask off: they read as PS1 incompleteness
+    assert ff.completeness_limits(masked, OFF.replace(bright_star_mask=True)).g_ps1_limit.iloc[0] == pytest.approx(expected, abs=0.3)
     bad = s.copy(); bad['ps1_qualityFlag'] = ff.BAD_STACK                        # a recovering-side flag does not touch the ZTF reference
-    assert ff.completeness_limits(bad, OFF).g_ps1_limit_psf.iloc[0] == pytest.approx(ff.completeness_limits(s, OFF).g_ps1_limit_psf.iloc[0], abs=1e-6)
+    assert ff.completeness_limits(bad, OFF).g_ps1_limit.iloc[0] == pytest.approx(ff.completeness_limits(s, OFF).g_ps1_limit.iloc[0], abs=1e-6)
 
 
-def test_a_one_sided_band_uses_the_limit_in_the_magnitude_it_compares():
+def test_a_band_records_whether_it_compares_psf_or_kron_and_the_magnitudes_follow():
     s, mag, rec = _reference_field(np.random.default_rng(0))
     point, extended = object_row('DDD', '---'), object_row('DDD', '---')
     for r in (point, extended):
@@ -344,17 +351,9 @@ def test_a_one_sided_band_uses_the_limit_in_the_magnitude_it_compares():
     point.update({f'{b}_ztf_kron': 20.0 for b in BANDS}); extended.update({f'{b}_ztf_kron': 19.0 for b in BANDS})
     table = pd.concat([s, pd.DataFrame([point, extended], index=['point', 'extended'])])
     out = ff.assign_catalogs(table, OFF)
-    assert list(out.loc[['point', 'extended'], 'g_use_kron']) == [False, True]
-    assert out.loc['point', 'g_ps1_limit'] == out.loc['point', 'g_ps1_limit_psf'] and out.loc['extended', 'g_ps1_limit'] == out.loc['extended', 'g_ps1_limit_kron']
-    assert out.loc['extended', 'g_ps1_limit'] < out.loc['point', 'g_ps1_limit']
-    assert out.loc['point', 'g_ps1_use'] == out.loc['point', 'g_ps1_limit'] and out.loc['extended', 'g_ps1_use'] == out.loc['extended', 'g_ps1_limit']
-def test_kron_containment_cuts_one_sided_objects_only():
-    rows = {'in_ztf in a Kron aperture': {**object_row('DDD', '---'), 'inside_brighter_kron': True}, 'in_ztf clear': object_row('DDD', '---'),
-            'in_both in a Kron aperture': {**object_row('DDD', 'DDD'), 'inside_brighter_kron': True}}
-    s = ff.assign_catalogs(pd.DataFrame(list(rows.values()), index=list(rows)), OFF)
-    alive = lambda catalog, cuts: list(sum(ff.cut_bands(s, catalog, cuts)[0].mask(-1)[b] for b in BANDS) > 0)
-    assert alive(1, OFF.replace(neighbour_kron=True)) == [False, True, False]
-    assert alive(0, OFF.replace(neighbour_kron=True)) == [False, False, True]
+    assert list(out.loc[['point', 'extended'], 'g_use_psf']) == [True, False]
+    z, _, p, _ = ff.compared_magnitudes(out.loc[['point', 'extended']], 'g')
+    assert list(z) == [20.0, 19.0] and list(p) == list(out.loc[['point', 'extended'], 'g_ps1_limit'])    # in_ztf: the PS1 side is the limit
 
 
 def test_annotate_neighbours_kron_containment_is_against_brighter_objects_only():

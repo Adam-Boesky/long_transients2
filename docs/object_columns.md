@@ -183,8 +183,8 @@ Per band, PS1 side (from the PS1 object; NaN / 0 / -1 without one):
 
 | column | dtype | meaning |
 |---|---|---|
-| `{b}_ztf_limit_psf`, `{b}_ztf_limit_kron` | float32 | ZTF's 90% recovery limit of clean PS1 detections in the object's quadrant, in PS1 PSF / Kron mag; capped at MAGLIM |
-| `{b}_ps1_limit_psf`, `{b}_ps1_limit_kron` | float32 | PS1's 90% recovery limit of clean ZTF detections in the quadrant, in ZTF PSF / Kron mag; capped at the published stack depth and at `{b}_ps1_depth` |
+| `{b}_ztf_limit` | float32 | ZTF's 90% recovery limit of clean PS1 detections in the band's quadrant, each binned by the magnitude it compares (Kron if extended, else PSF); capped at MAGLIM |
+| `{b}_ps1_limit` | float32 | PS1's 90% recovery limit of clean ZTF detections in the band's quadrant, same magnitude rule; capped at the stack depth and `{b}_ps1_depth` |
 
 ### 4g. Statuses, catalog, magnitudes used (`assign_catalogs`)
 
@@ -196,19 +196,16 @@ Per band, PS1 side (from the PS1 object; NaN / 0 / -1 without one):
 | `{b}_cat` | int8 | comparison: 0 ZTF vs PS1, 1 ZTF vs PS1 limit, 2 PS1 vs ZTF limit, -1 none (`COMPARISON`; in_both keeps only 0) |
 | `{b}_extendedness` | float64 | inverse-variance (PSF − Kron − 0.05)/σ over the two surveys; -inf with no Kron (`extendedness`) |
 | `point_source` | bool | object-wide morphology (`point_source`): not extended in ≥ 2 measured bands |
-| `{b}_use_kron` | bool | the band compares Kron magnitudes (extended, compared, Kron on each needed side) |
-| `{b}_ztf_limit`, `{b}_ps1_limit` | float32 | the `_limit_psf` or `_limit_kron` matching `_use_kron` |
-| `{b}_ztf_use`, `{b}_ztf_use_err` | float64 | ZTF magnitude entering dmag (PSF or Kron; for `_cat` 2 the sub-threshold measurement or the limit, error 0 for a limit) |
+| `{b}_use_psf` | bool | the band compares PSF magnitudes (else Kron: extended, compared, Kron on each needed side) |
 | `{b}_ztf_use_meas` | bool | `_cat` 2 and ZTF's sub-threshold measurement is used instead of the limit |
-| `{b}_ps1_use`, `{b}_ps1_use_err` | float32 | PS1 magnitude entering dmag (same rules, `_cat` 1) |
 | `{b}_ps1_use_forced` | bool | `_cat` 1 and PS1's forced / sub-threshold measurement is used instead of the limit |
 
 ### 4h. Δmag and σ (`annotate_sigma`)
 
 | column | dtype | meaning |
 |---|---|---|
-| `{b}_dmag` | float64 | `{b}_ztf_use − {b}_ps1_use`, mag (negative: brighter in ZTF) |
-| `{b}_sigma` | float64 | signed σ against the band's KDE envelope; clipped one-sided against a limit; NaN for `_cat` -1 or `{b}_ps1_use` not > 14 |
+| `{b}_dmag` | float64 | ZTF − PS1 of the magnitudes the band compares (`compared_magnitudes`), mag (negative: brighter in ZTF) |
+| `{b}_sigma` | float64 | signed σ against the band's KDE envelope; clipped one-sided against a limit; NaN for `_cat` -1 or the compared PS1 magnitude not > 14 |
 
 ### 4i. Outcome record (`annotate_outcomes`)
 
