@@ -164,11 +164,16 @@ def test_the_sharpness_cut_is_object_wide_on_the_snr_weighted_mean():
     assert survivors(2, 0.5) == [False, False, True]                  # nothing to judge without a ZTF detection
 
 
-def test_a_bad_stack_ps1_object_is_dropped_whole():
-    rows = {'bad stack': {**object_row('DDD', 'DDD'), 'ps1_qualityFlag': ff.SUSPECT_STACK}, 'clean': object_row('DDD', 'DDD')}
+def test_the_stack_flags_are_confident_checks_of_in_both_and_in_pstarr_and_do_not_touch_in_ztf():
+    rows = {'suspect': {**object_row('DDD', 'DDD'), 'ps1_qualityFlag': ff.SUSPECT_STACK}, 'bad': {**object_row('DDD', 'DDD'), 'ps1_qualityFlag': ff.BAD_STACK},
+            'clean': object_row('DDD', 'DDD'), 'ztf only, bad': {**object_row('DDD', 'LLL'), 'ps1_qualityFlag': ff.BAD_STACK}}
     s = ff.assign_catalogs(pd.DataFrame(list(rows.values()), index=list(rows)), OFF)
-    assert list(s.catalog) == [-1, 0] and s.catalog_reason.iloc[0] == 'no comparable band'      # every PS1 band X: not comparable
-    assert list(sum(ff.run_branch(s, 0, OFF)[1].mask(0)[b] for b in BANDS) > 0) == [False, True]
+    assert list(s.catalog) == [0, 0, 0, 1]                                                       # the flag no longer sets the status
+    wf = ff.run_branch(s, 0, OFF)[1]
+    after = lambda step: list(sum(wf.mask(wf.steps.index(step))[b] for b in BANDS) > 0)[:3]
+    assert after('PS1: not BAD_STACK') == [True, False, True] and after('PS1: not SUSPECT_STACK') == [False, False, True]
+    assert all(step not in ff.run_branch(s, 1, OFF)[1].steps for step in ('PS1: not BAD_STACK', 'PS1: not SUSPECT_STACK'))
+    assert list(sum(ff.run_branch(s, 1, OFF)[1].mask(2)[b] for b in BANDS) > 0)[3:] == [True]    # in_ztf keeps it
 
 
 def test_the_error_floor_adds_in_quadrature_and_caps_snr_consistently():

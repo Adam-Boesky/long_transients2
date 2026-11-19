@@ -10,8 +10,7 @@ unmatched PS1 object), and every band of it is judged in the same order, each st
      clear of masked pixels (at the detection, or at the PS1 position for a non-detection) and, for extended objects,
      a ZTF Kron aperture at most KRON_MAX_MASKED masked. PS1, per band: optionally the residual sky at most `ps1_sky_max` (light the background
      model left behind, from bright-star halos, large galaxies and stack background steps), the position not in one
-     of MAST's mis-registered polar skycells (`ps1_skycells`; with or without a PS1 object), the object's stack
-     not BAD_STACK / SUSPECT_STACK (PS1's stack-quality flag, object-level, so every band fails together) and at least
+     of MAST's mis-registered polar skycells (`ps1_skycells`; with or without a PS1 object) and at least
      `ps1_min_nframes` stack input frames (PS1 runs its mixture-model outlier rejection only with more than 6 inputs,
      Waters et al. 2020; few-frame stacks keep single-exposure artefacts), the defect / spike /
      star-core / burntool / saturation
@@ -390,9 +389,8 @@ def ps1_checks(src: pd.DataFrame, b: str, cuts: Cuts = Cuts()) -> List[Tuple[str
     """PS1's side of band b, (label, passes) in order; without a PS1 object only the skycell check applies (the PS1
     limit stands in). First the band's row not from one of MAST's mis-registered polar skycells (`annotate_skycells`;
     PS1 invalidated every magnitude there, and the detections and fluxes come from the same bad stacks, so a
-    measurement from one is unusable and a missing PS1 object in one says nothing), then the object's stack not BAD_STACK / SUSPECT_STACK (PS1's
-    object-level stack-quality flag: every band of a bad stack fails). With `cuts.ps1_sky_max`, then a residual sky
-    at most that (a band without a sky value passes); with
+    measurement from one is unusable and a missing PS1 object in one says nothing). With `cuts.ps1_sky_max`, then a
+    residual sky at most that (a band without a sky value passes); with
     `cuts.ps1_min_nframes`, then a stack of at least that many input frames (nFrames 0, i.e. no stack input, fails)."""
     none = src.ps1_idx.values < 0
     sky_max, min_nframes = cuts.ps1_sky_max, cuts.ps1_min_nframes
@@ -400,8 +398,7 @@ def ps1_checks(src: pd.DataFrame, b: str, cuts: Cuts = Cuts()) -> List[Tuple[str
            if sky_max is not None else [])
     frames = ([(f'PS1: stack nFrames >= {min_nframes}', none | (src[f'{b}_ps1_nFrames'].values >= min_nframes))]
               if min_nframes is not None else [])
-    stack = [('PS1: not in a flagged polar skycell', ~src[f'{b}_ps1_skycell_bad'].values),
-             ('PS1: not BAD_STACK / SUSPECT_STACK', none | ~_bits(src.ps1_qualityFlag.values, BAD_STACK | SUSPECT_STACK))]
+    stack = [('PS1: not in a flagged polar skycell', ~src[f'{b}_ps1_skycell_bad'].values)]
     return (stack + sky + frames + [(label, none | ~_bits(src[f'{b}_ps1_{col}'].values, bit)) for label, col, bit in PS1_BAND_FLAGS]
             + [('PS1: measured in the band', none | src[f'{b}_ps1_meas'].values),
                (f'PS1: psfQfPerfect > {PSF_QF_MIN}', none | (src[f'{b}_ps1_psfQfPerfect'].values > PSF_QF_MIN))])
@@ -460,7 +457,7 @@ def completeness_references(src: pd.DataFrame, cuts: Cuts = Cuts()) -> Tuple[Dic
     z_trust = {b: _passes(ztf_checks(src, b, point)) & src[f'{b}_ztf_det'].values & (src[f'{b}_ztf_snr'].values >= SNR_MIN) for b in BANDS}
     p_trust = {b: _passes(ps1_checks(src, b, cuts)) & src[f'{b}_ps1_detected'].values & (src[f'{b}_ps1_snr'].values >= SNR_MIN) for b in BANDS}
     n_z, n_p = sum(z_trust[b].astype(int) for b in BANDS), sum(p_trust[b].astype(int) for b in BANDS)
-    stack_ok = src.ps1_nStackDetections.values >= PS1_ONLY_MIN_STACK_DETECTIONS          # BAD_STACK is in ps1_checks
+    stack_ok = (src.ps1_nStackDetections.values >= PS1_ONLY_MIN_STACK_DETECTIONS) & ~_bits(src.ps1_qualityFlag.values, BAD_STACK | SUSPECT_STACK)
     z_ref = {b: z_trust[b] & (n_z >= 2) & position_ok & z_sharp_ok for b in BANDS}                                   # PS1's limit: ZTF's detections
     p_ref = {b: p_trust[b] & (n_p >= 2) & position_ok & stack_ok & src.ps1_clear.values & src[f'{b}_ztf_covered'].values for b in BANDS}
     return z_ref, p_ref
@@ -1026,7 +1023,9 @@ def sharpness_fails(src: pd.DataFrame, point: np.ndarray, cuts: Cuts = Cuts()) -
 
 
 def real_checks(src: pd.DataFrame, catalog: int, cuts: Cuts = Cuts()) -> List[Tuple[str, np.ndarray]]:
-    """Object-wide tests that a `catalog` object is real, (label, passes) in order."""
+    """Object-wide tests that a `catalog` object is real, (label, passes) in order. PS1's BAD_STACK / SUSPECT_STACK
+    (qualityFlag: at most one good measurement among its stack bands) count where the PS1 side is a measurement
+    (in_both, in_pstarr); for in_ztf the PS1 side is a limit and the flag only says the object is faint there."""
     checks = []
     sharp_max, isolation_arcsec = cuts.sharp_max, cuts.isolation_arcsec
     if cuts.bright_star_mask:
@@ -1042,6 +1041,9 @@ def real_checks(src: pd.DataFrame, catalog: int, cuts: Cuts = Cuts()) -> List[Tu
     if catalog == 2:
         checks.append((f'PS1: nStackDetections >= {PS1_ONLY_MIN_STACK_DETECTIONS}',
                        src.ps1_nStackDetections.values >= PS1_ONLY_MIN_STACK_DETECTIONS))
+    if catalog in (0, 2):                                                  # PS1's own verdict on its detections of the object:
+        checks.append(('PS1: not BAD_STACK', ~_bits(src.ps1_qualityFlag.values, BAD_STACK)))          # <= 1 good or suspect measurement
+        checks.append(('PS1: not SUSPECT_STACK', ~_bits(src.ps1_qualityFlag.values, SUSPECT_STACK)))  # <= 1 good measurement
     return checks
 
 

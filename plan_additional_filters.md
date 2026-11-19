@@ -64,7 +64,7 @@ Kron magnitudes and decides whether the Kron-contamination cut applies.
 | ZTF DAOPhot flags = 0 | in_both, in_ztf | band | E |
 | ZTF > 5 px from a masked pixel | in_both, in_ztf | band | E |
 | PS1 position on valid ZTF pixels, > 5 px from masked | in_both, in_pstarr | object | E |
-| PS1 not BAD_STACK / SUSPECT_STACK (`qualityFlag`) | in_both, in_pstarr | object | E |
+| PS1 not BAD_STACK, not SUSPECT_STACK (`qualityFlag`: at most one good stack measurement; confident group, since it counts PS1's detections rather than judging the data) | in_both, in_pstarr | object | E |
 | PS1 position not in a MAST-flagged mis-registered polar skycell (`Extracting/ps1_skycells.py`, `badcells_near_north_pole_v6.dat`; applies without a PS1 object too) | all | object | E |
 | PS1 not DEFECT, PEAK_ON_SPIKE, SATSTAR (`infoFlag`) | in_both, in_pstarr | object* | E |
 | PS1 not ON_STARCORE, ON_BURNTOOL, SATSTAR_PROFILE (`infoFlag2`) | in_both, in_pstarr | object* | E |
@@ -174,8 +174,10 @@ object), and 2, 3b, 5, 6 (in_both drops one-sided bands instead of comparing the
 that faded out of two bands and kept one ZTF detection is lost rather than moved to in_pstarr). 4′ uses the < 5σ ZTF
 value where it is brighter than the completeness limit, which it rarely is.
 
-Open: BAD_STACK / SUSPECT_STACK, an object-level PS1 flag, marks every PS1 band X (≈230k ZTF-detected objects in field
-860).
+Resolved 2026-11-19: BAD_STACK / SUSPECT_STACK moved from the shared quality checks to the confident group of in_both and
+in_pstarr, as two steps. In the quality group it marked every PS1 band X for ≈230k ZTF-detected objects in field 860, i.e.
+it removed exactly the faint-in-PS1 brightenings (the field-345 follow-up source among them); the flag counts PS1's
+good stack measurements, so for in_ztf it only says the object is faint in PS1.
 
 Caveat on `nStackDetections`: it sums detections over all of an object's stack rows and over grizy, so an object in a
 skycell overlap detected in one band counts 2. In field 860, 1,029 of the 3,534 in_pstarr candidates that pass have at
