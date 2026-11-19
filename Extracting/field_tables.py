@@ -203,7 +203,7 @@ def merge_bands(cats: Dict[str, pd.DataFrame], radius_arcsec: float = MATCH_ARCS
     nearest neighbour within the radius, the pairs are the edges of a graph whose connected components are the objects,
     and a component that holds two rows of one band (possible in a blend, through a third band) loses its longest edge
     until every object has at most one row per band. An object's position is the S/N-weighted mean of its detections
-    (PS1's convention for its objects). Columns: ra, dec, nbands, best_snr, and per band `{b}_idx` (row in the band
+    (PS1's convention for its objects). Columns: ra, dec, and per band `{b}_idx` (row in the band
     table, -1 if absent), `{b}_sep` (the row's separation from the object position, arcsec) and copies of the main
     photometry columns."""
     from scipy.sparse import coo_matrix
@@ -253,8 +253,6 @@ def merge_bands(cats: Dict[str, pd.DataFrame], radius_arcsec: float = MATCH_ARCS
     for b in BANDS:
         if b not in cats:
             obj[f'{b}_idx'], obj[f'{b}_sep'] = -1, np.nan
-    obj['nbands'] = sum((obj[f'{b}_idx'] >= 0).astype(int) for b in BANDS)
-    obj['best_snr'] = np.nanmax(np.c_[[obj[f'{b}_snr'].values if f'{b}_snr' in obj else np.full(len(obj), np.nan) for b in BANDS]], axis=0)
     return obj
 
 

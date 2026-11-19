@@ -89,8 +89,9 @@ def test_merge_bands_links_every_pair_without_a_band_order_and_averages_position
     i = _band([10.0, 10.0 + 0.4 * s], [20.0 + 0.2 * s, 20.0 + 3.0 * s], [20.0, 8.0])   # the star; an unrelated i source 3" away
     for order in ({'g': g, 'r': r, 'i': i}, {'i': i, 'r': r, 'g': g}):
         o = ft.merge_bands(order).sort_values(['ra', 'dec']).reset_index(drop=True)
-        assert len(o) == 3 and sorted(o.nbands) == [1, 1, 3]
-        star = o[o.nbands == 3].iloc[0]
+        n = o[['g_idx', 'r_idx', 'i_idx']].ge(0).sum(axis=1)
+        assert len(o) == 3 and sorted(n) == [1, 1, 3]
+        star = o[n == 3].iloc[0]
         assert (star.g_idx, star.r_idx, star.i_idx) == (0, 0, 0)
         assert abs(star.ra - (10.0 + 0.2 * s * 100 / 170)) < 1e-7              # S/N-weighted mean: r (100) pulls hardest
         assert 0 < star.r_sep < 0.2 and star.g_sep > 0

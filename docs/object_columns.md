@@ -52,8 +52,6 @@ Tables built before commit 234ec43 also carry SExtractor `kron_auto`, `kron_auto
 | `{b}_idx` | int64 | row in `ztf_{b}.parquet`, -1 if not detected in b | `merge_bands` |
 | `{b}_sep` | float64 | separation of the b row from the object position, arcsec; NaN if absent | `merge_bands` |
 | `{b}_mag`, `{b}_magerr`, `{b}_snr`, `{b}_chi`, `{b}_sharp`, `{b}_flags`, `{b}_nan_dist_px`, `{b}_zkron`, `{b}_zkron_err`, `{b}_zkron_flag`, `{b}_zkron_masked` | float64 | copies of the band-table columns (`OBJECT_COLS`; flags become float with NaN) | `merge_bands` |
-| `nbands` | int64 | number of bands with a detection | `merge_bands` |
-| `best_snr` | float64 | max DAOPhot `snr` over bands | `merge_bands` |
 | `{b}_covered` | bool | on a valid pixel of some quadrant's b reference image | `object_coverage` |
 | `ps1_idx` | int64 | row in `ps1.parquet` (mutual nearest within 1"), -1 if none | `match_ps1` |
 | `ps1_sep` | float64 | ZTF-PS1 separation, arcsec; NaN if unmatched | `match_ps1` |
