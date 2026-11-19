@@ -13,11 +13,11 @@ flowchart TD
     B["in_both"]
     Z["in_ztf"]
     P["in_pstarr"]
-    CONF["<b>5 · Confident</b> — is it one real object?<br/>bright-star mask · sharpness (point sources)<br/>in_ztf, in_pstarr: no object within 3″, outside brighter objects' Kron apertures<br/>in_both, in_pstarr: PS1 not BAD_STACK, not SUSPECT_STACK · in_pstarr: nStackDetections ≥ 2"]
+    CONF["<b>5 · Confident</b> — is it one real object?<br/>bright-star mask · sharpness (point sources)<br/>in_ztf, in_pstarr: no object within 3″, outside brighter objects' Kron apertures<br/>in_both, in_pstarr: PS1 nStackDetections ≥ 2, not BAD_STACK, not SUSPECT_STACK"]
     POP["<b>6 · Population</b> — not Galactic<br/>no Gaia proper motion or parallax at 5σ"]
     CAL["<b>7 · Calibrate</b> on what is left<br/>90 % recovery limits per quadrant, PSF and Kron · Δmag envelope from the two-sided bands"]
     INT["<b>8 · Interesting</b><br/>|σ| > 3 in ≥ 2 bands, ≥ 2 of them the same sign"]
-    OUT["<b>candidates</b><br/>with every band's S/N: the website applies any S/N threshold"]
+    OUT["<b>candidates</b>"]
     IN --> Q --> D --> C --> S
     S -- no --> NC
     S -- two-sided --> B

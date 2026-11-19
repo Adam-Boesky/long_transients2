@@ -20,8 +20,8 @@ unmatched PS1 object), and every band of it is judged in the same order, each st
      the circle (`bright_star_radius`) and the four diffraction-spike boxes (`spike_half_length`; optional); optionally a ZTF
      sharpness (`ztf_sharpness`) within `sharp_max` for point sources (`sharp_point_only`; a point-source statistic,
      applied to point sources: in field 860 the extended objects it removed were galaxies, two of them known AGN);
-     for in_pstarr objects nStackDetections >=
-     PS1_ONLY_MIN_STACK_DETECTIONS; for in_ztf and in_pstarr objects, optionally (`annotate_neighbours`), no other
+     for in_both and in_pstarr objects nStackDetections >= PS1_MIN_STACK_DETECTIONS and neither BAD_STACK nor
+     SUSPECT_STACK (PS1's verdict on its own detections); for in_ztf and in_pstarr objects, optionally (`annotate_neighbours`), no other
      object of either survey (ZTF or PS1, matched or not, whether or not it survives any cut) within
      `isolation_arcsec`, nor inside a brighter object's Kron aperture (`neighbour_kron`): a one-sided object that
      close to another object is most often a piece of the same light that the other survey, or the match, assigned to
@@ -110,7 +110,7 @@ BAD_STACK, SUSPECT_STACK = 128, 64                        # qualityFlag
 DEFECT, PEAK_ON_SPIKE, SATSTAR = 2048, 1 << 29, 128        # infoFlag
 ON_SPIKE, ON_STARCORE, ON_BURNTOOL, SATSTAR_PROFILE = 8, 16, 32, 4096   # infoFlag2
 PSF_QF_MIN = 0.85               # PS1 psfQfPerfect: PSF-weighted unmasked fraction (Magnier et al. 2020 'generous' threshold)
-PS1_ONLY_MIN_STACK_DETECTIONS = 2   # in_pstarr objects need PS1 nStackDetections >= this (no ZTF detection confirms them)
+PS1_MIN_STACK_DETECTIONS = 2    # where PS1's side is a measurement (in_both, in_pstarr): PS1 detected the object in at least this many stacks
 BRIGHT_STAR_G_MAX = 16.0        # Gaia stars brighter than this get a mask circle and spike boxes
 SELF_ARCSEC = 1.0               # a mask star this close to an object is the object itself
 KRON_REACH_ARCSEC = 40.0        # Kron containment is searched out to this radius; real apertures reach ~30"
@@ -472,7 +472,7 @@ def completeness_references(src: pd.DataFrame, cuts: Cuts = Cuts()) -> Tuple[Dic
     z_trust = {b: _passes(ztf_checks(src, b, point)) & src[f'{b}_ztf_det'].values & (src[f'{b}_ztf_snr'].values >= SNR_MIN) for b in BANDS}
     p_trust = {b: _passes(ps1_checks(src, b, cuts)) & src[f'{b}_ps1_detected'].values & (src[f'{b}_ps1_snr'].values >= SNR_MIN) for b in BANDS}
     n_z, n_p = sum(z_trust[b].astype(int) for b in BANDS), sum(p_trust[b].astype(int) for b in BANDS)
-    stack_ok = (src.ps1_nStackDetections.values >= PS1_ONLY_MIN_STACK_DETECTIONS) & ~_bits(src.ps1_qualityFlag.values, BAD_STACK | SUSPECT_STACK)
+    stack_ok = (src.ps1_nStackDetections.values >= PS1_MIN_STACK_DETECTIONS) & ~_bits(src.ps1_qualityFlag.values, BAD_STACK | SUSPECT_STACK)
     z_ref = {b: z_trust[b] & (n_z >= 2) & position_ok & z_sharp_ok for b in BANDS}                                   # PS1's limit: ZTF's detections
     p_ref = {b: p_trust[b] & (n_p >= 2) & position_ok & stack_ok & src.ps1_clear.values & src[f'{b}_ztf_covered'].values for b in BANDS}
     return z_ref, p_ref
@@ -1038,9 +1038,11 @@ def sharpness_fails(src: pd.DataFrame, point: np.ndarray, cuts: Cuts = Cuts()) -
 
 
 def real_checks(src: pd.DataFrame, catalog: int, cuts: Cuts = Cuts()) -> List[Tuple[str, np.ndarray]]:
-    """Object-wide tests that a `catalog` object is real, (label, passes) in order. PS1's BAD_STACK / SUSPECT_STACK
-    (qualityFlag: at most one good measurement among its stack bands) count where the PS1 side is a measurement
-    (in_both, in_pstarr); for in_ztf the PS1 side is a limit and the flag only says the object is faint there."""
+    """Object-wide tests that a `catalog` object is real, (label, passes) in order. Where the PS1 side is a measurement
+    (in_both, in_pstarr) PS1's own verdict on its detections counts: nStackDetections >= PS1_MIN_STACK_DETECTIONS (our
+    S/N can call a forced measurement D where PS1's detection pass found nothing: a blend or an underestimated error)
+    and neither BAD_STACK nor SUSPECT_STACK (qualityFlag: at most one good measurement). For in_ztf the PS1 side is a
+    limit and all three only say the object is faint there."""
     checks = []
     sharp_max, isolation_arcsec = cuts.sharp_max, cuts.isolation_arcsec
     if cuts.bright_star_mask:
@@ -1053,10 +1055,9 @@ def real_checks(src: pd.DataFrame, catalog: int, cuts: Cuts = Cuts()) -> List[Tu
     if sharp_max is not None:
         label = f'ZTF: S/N²-weighted |sharp| <= {sharp_max}' + (' (point sources)' if cuts.sharp_point_only else '')
         checks.append((label, ~sharpness_fails(src, src.g_point.values, cuts)))
-    if catalog == 2:
-        checks.append((f'PS1: nStackDetections >= {PS1_ONLY_MIN_STACK_DETECTIONS}',
-                       src.ps1_nStackDetections.values >= PS1_ONLY_MIN_STACK_DETECTIONS))
-    if catalog in (0, 2):                                                  # PS1's own verdict on its detections of the object:
+    if catalog in (0, 2):                                                  # PS1's own verdict on its detections of the object,
+        checks.append((f'PS1: nStackDetections >= {PS1_MIN_STACK_DETECTIONS}',   # wherever its side is a measurement
+                       src.ps1_nStackDetections.values >= PS1_MIN_STACK_DETECTIONS))
         checks.append(('PS1: not BAD_STACK', ~_bits(src.ps1_qualityFlag.values, BAD_STACK)))          # <= 1 good or suspect measurement
         checks.append(('PS1: not SUSPECT_STACK', ~_bits(src.ps1_qualityFlag.values, SUSPECT_STACK)))  # <= 1 good measurement
     return checks

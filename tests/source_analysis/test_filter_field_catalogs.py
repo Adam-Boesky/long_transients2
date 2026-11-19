@@ -119,15 +119,17 @@ def test_an_in_both_object_drops_its_one_sided_bands_and_the_limit_is_never_used
     assert src.loc['6', 'g_ztf_use'] != src.loc['6', 'g_ztf_limit'] or np.isnan(src.loc['6', 'g_ztf_use'])
 
 
-def test_a_ps1_only_object_needs_two_stack_detections_and_a_matched_one_does_not():
+def test_an_object_whose_ps1_side_is_a_measurement_needs_two_stack_detections():
     rows = {'in_pstarr, 1 detection': object_row('---', 'DDD', 1), 'in_pstarr, 2 detections': object_row('---', 'DDD', 2),
-            'in_both, 1 detection': object_row('DDD', 'DDD', 1)}
+            'in_both, 1 detection': object_row('DDD', 'DDD', 1), 'in_both, 2 detections': object_row('DDD', 'DDD', 2),
+            'in_ztf, 1 detection': object_row('DDD', 'LLL', 1)}
     s = ff.assign_catalogs(pd.DataFrame(list(rows.values()), index=list(rows)), OFF)
     def survivors(catalog):
         wf = ff.run_branch(s, catalog, OFF)[1]
         return sum(wf.mask(LAST_CONFIDENT(wf))[b] for b in BANDS) > 0
-    assert list(survivors(2)) == [False, True, False]
-    assert list(survivors(0)) == [False, False, True]
+    assert list(survivors(2)) == [False, True, False, False, False]
+    assert list(survivors(0)) == [False, False, False, True, False]
+    assert list(survivors(1)) == [False, False, False, False, True]                  # in_ztf: the PS1 side is a limit, no stack test
 
 
 def test_an_object_inside_a_bright_star_mask_is_dropped_only_when_the_mask_is_on():
