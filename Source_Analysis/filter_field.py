@@ -114,6 +114,7 @@ PS1_MIN_STACK_DETECTIONS = 2    # where PS1's side is a measurement (in_both, in
 BRIGHT_STAR_G_MAX = 16.0        # Gaia stars brighter than this get a mask circle and spike boxes
 SELF_ARCSEC = 1.0               # a mask star this close to an object is the object itself
 KRON_REACH_ARCSEC = 40.0        # Kron containment is searched out to this radius; real apertures reach ~30"
+PS1_COVERAGE_ARCMIN = 1.0       # PS1 covers a position in a band if it measured some object in that band this close (the old pipeline's 1' rule)
 SPIKE_PA = (0.0, 90.0, 30.0, 150.0)   # ZTF diffraction spikes: position angles (deg, N through E) of the four boxes
 SPIKE_WIDTH_ARCSEC = 12.0       # full width of a spike box
 SPIKE_GROWTH, SPIKE_ANCHOR_G = 1.15, 16.0   # spike half-length = R * SPIKE_GROWTH ** (SPIKE_ANCHOR_G - G): R at G = 16, ~4 R at G = 6
@@ -391,7 +392,9 @@ def ps1_checks(src: pd.DataFrame, b: str, cuts: Cuts = Cuts()) -> List[Tuple[str
     limit stands in). First the band's row not from one of MAST's mis-registered polar skycells (`annotate_skycells`;
     PS1 invalidated every magnitude there, and the detections and fluxes come from the same bad stacks, so a
     measurement from one is unusable and a missing PS1 object in one says nothing), and the position not in one of
-    DR2's missing-catalog regions when there is no PS1 object (`annotate_skycells`). With `cuts.ps1_sky_max`, then a
+    DR2's missing-catalog regions when there is no PS1 object (`annotate_skycells`), and, again without a PS1 object,
+    the band's stack reaching the position (`{b}_ps1_covered`: a PS1 object measured in the band within
+    PS1_COVERAGE_ARCMIN; otherwise its limit cannot stand in). With `cuts.ps1_sky_max`, then a
     residual sky at most that (a band without a sky value passes); with
     `cuts.ps1_min_nframes`, then a stack of at least that many input frames (nFrames 0, i.e. no stack input, fails)."""
     none = src.ps1_idx.values < 0
@@ -401,7 +404,8 @@ def ps1_checks(src: pd.DataFrame, b: str, cuts: Cuts = Cuts()) -> List[Tuple[str
     frames = ([(f'PS1: stack nFrames >= {min_nframes}', none | (src[f'{b}_ps1_nFrames'].values >= min_nframes))]
               if min_nframes is not None else [])
     stack = [('PS1: not in a flagged polar skycell', ~src[f'{b}_ps1_skycell_bad'].values),
-             ('PS1: catalog covers the position', ~src.ps1_catalog_missing.values)]
+             ('PS1: catalog covers the position', ~src.ps1_catalog_missing.values),
+             (f"PS1: objects within {PS1_COVERAGE_ARCMIN:g}' in the band", (~none) | src[f'{b}_ps1_covered'].values)]
     return (stack + sky + frames + [(label, none | ~_bits(src[f'{b}_ps1_{col}'].values, bit)) for label, col, bit in PS1_BAND_FLAGS]
             + [('PS1: measured in the band', none | src[f'{b}_ps1_meas'].values),
                (f'PS1: psfQfPerfect > {PSF_QF_MIN}', none | (src[f'{b}_ps1_psfQfPerfect'].values > PSF_QF_MIN))])
@@ -1177,7 +1181,10 @@ def annotate_neighbours(src: pd.DataFrame) -> pd.DataFrame:
 
       `nearest_other_arcsec`   distance to the nearest other object (NaN beyond 60");
       `inside_brighter_kron`   inside the Kron aperture of a brighter object (PS1's KronRad, or our ZTF aperture): the
-                               light there belongs to that object (a galaxy's outskirts).
+                               light there belongs to that object (a galaxy's outskirts);
+      `{b}_ps1_covered`        PS1 measured some object in band b within PS1_COVERAGE_ARCMIN: its stack reaches the
+                               position in that band (the catalog is all we have of PS1's footprint; a stack edge or
+                               hole wider than that radius shows as no objects at all).
 
     An object's magnitude is its brightest PSF magnitude in any band of either survey; a Kron radius is the largest
     finite one over the bands."""
@@ -1208,8 +1215,15 @@ def annotate_neighbours(src: pd.DataFrame) -> pd.DataFrame:
     i = np.fromiter((j for h in hits for j in h), int, int(n_hits.sum()))               # the object inside it
     inside = (owner[e] != i) & (e_mag[e] < own_mag[i])
     in_kron[i[inside]] = True
+    # PS1 coverage per band, from the catalog alone: a PS1 object measured in the band within PS1_COVERAGE_ARCMIN
+    ps1_pos = np.c_[src.ps1_ra.values[ps1_rows] * cosd, src.ps1_dec.values[ps1_rows]]
+    covered = {}
+    for b in BANDS:
+        meas = src[f'{b}_ps1_meas'].values[ps1_rows]
+        d = cKDTree(ps1_pos[meas]).query(pos, k=1, distance_upper_bound=PS1_COVERAGE_ARCMIN / 60)[0] if meas.any() else np.full(len(src), np.inf)
+        covered[f'{b}_ps1_covered'] = np.isfinite(d)
     return _attach(src, {'nearest_other_arcsec': np.where(np.isfinite(nearest), nearest * 3600, np.nan).astype(np.float32),
-                         'inside_brighter_kron': in_kron})
+                         'inside_brighter_kron': in_kron, **covered})
 
 
 def field_box(src: pd.DataFrame, pad_deg: float = 0.4) -> Tuple[float, float, float, float]:

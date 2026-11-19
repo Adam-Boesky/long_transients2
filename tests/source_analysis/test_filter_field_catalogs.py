@@ -20,7 +20,7 @@ PS1 = {'D': (1e-5, 1e-6, 0, 0, 1.0), 'L': (3e-6, 1e-6, 0, 0, 1.0), 'F': (-1e-6, 
 
 def object_row(ztf: str, ps1: str, n_stack_detections: int = 3) -> dict:
     """One object from three-letter g, r, i status codes per survey, in the columns `object_table` writes."""
-    r = {'ra': 10.0, 'dec': 20.0, 'ccd': 1, 'qid': 1, 'ps1_qualityFlag': 0, 'ps1_clear': True, 'ps1_skycell_bad': False, 'ps1_catalog_missing': False, **{f'{b}_ps1_skycell_bad': False for b in BANDS},
+    r = {'ra': 10.0, 'dec': 20.0, 'ccd': 1, 'qid': 1, 'ps1_qualityFlag': 0, 'ps1_clear': True, 'ps1_skycell_bad': False, 'ps1_catalog_missing': False, **{f'{b}_ps1_covered': True for b in BANDS}, **{f'{b}_ps1_skycell_bad': False for b in BANDS},
          'ps1_nStackDetections': n_stack_detections,
          'ztf_idx': -1 if set(ztf) <= {'-', 'N'} else 0, 'ps1_idx': -1 if set(ps1) == {'-'} else 0,
          'gaia_pm_sig': np.nan, 'gaia_parallax_over_error': np.nan, 'bright_star_d_over_R': np.inf, 'in_star_spike': False, 'bright_star_masked': False,
@@ -273,7 +273,8 @@ def test_nearest_other_object_counts_both_surveys_matched_or_not_but_not_the_obj
     off = np.array([0, 2, 10, 1.5]) / 3600
     src = pd.DataFrame({'ra': np.full(4, 10.0), 'dec': 20.0 + off,
                         'ztf_idx': [0, 1, -1, 2], 'ps1_idx': [-1, -1, 0, 1],               # the last is a matched pair
-                        'ps1_ra': [np.nan, np.nan, 10.0, 10.0], 'ps1_dec': [np.nan, np.nan, 20.0 + 10 / 3600, 20.0 + 1.9 / 3600]})
+                        'ps1_ra': [np.nan, np.nan, 10.0, 10.0], 'ps1_dec': [np.nan, np.nan, 20.0 + 10 / 3600, 20.0 + 1.9 / 3600],
+                        **{f'{b}_ps1_meas': [False, False, True, True] for b in BANDS}})
     for b in BANDS:
         src[f'{b}_ztf_psf'] = src[f'{b}_ps1_psf'] = src[f'{b}_ztf_kron_rap'] = src[f'{b}_ps1_kron_rad'] = np.nan
     d = ff.annotate_neighbours(src).nearest_other_arcsec.values
@@ -358,7 +359,7 @@ def test_kron_containment_cuts_one_sided_objects_only():
 
 def test_annotate_neighbours_kron_containment_is_against_brighter_objects_only():
     src = pd.DataFrame({'ra': [10.0, 10.0, 10.0], 'dec': [20.0, 20.0 + 2.0 / 3600, 20.0 + 2.5 / 3600],
-                        'ztf_idx': [0, 1, 2], 'ps1_idx': [-1, -1, -1], 'ps1_ra': np.nan, 'ps1_dec': np.nan})
+                        'ztf_idx': [0, 1, 2], 'ps1_idx': [-1, -1, -1], 'ps1_ra': np.nan, 'ps1_dec': np.nan, **{f'{b}_ps1_meas': False for b in BANDS}})
     for b in BANDS:
         src[f'{b}_ztf_psf'] = [17.0, 21.0, 16.0]; src[f'{b}_ps1_psf'] = np.nan
         src[f'{b}_ztf_kron_rap'] = [3.0, 3.0, np.nan]; src[f'{b}_ps1_kron_rad'] = np.nan
@@ -489,3 +490,11 @@ def test_a_position_where_dr2_has_no_catalog_gives_the_ps1_side_nothing_to_say()
     rows = {'ztf only, in a box': {**object_row('DDD', '---'), 'ps1_catalog_missing': True}, 'ztf only, covered': object_row('DDD', '---')}
     s = ff.assign_catalogs(pd.DataFrame(list(rows.values()), index=list(rows)), OFF)
     assert list(s.catalog) == [-1, 1] and 'PS1: catalog covers the position' in [l for l, _ in ff.ps1_checks(s, 'g', OFF)]
+
+
+def test_without_a_ps1_object_a_band_needs_ps1_objects_nearby_for_its_limit_to_stand_in():
+    rows = {'ztf only, PS1 reaches it': object_row('DDD', '---'), 'ztf only, no PS1 objects near in g': {**object_row('DDD', '---'), 'g_ps1_covered': False},
+            'matched, flag irrelevant': {**object_row('DDD', 'DDD'), 'g_ps1_covered': False}}
+    s = ff.assign_catalogs(pd.DataFrame(list(rows.values()), index=list(rows)), OFF)
+    assert list(s.g_ps1_status) == ['U', 'X', 'D'] and list(s.catalog) == [1, 1, 0]            # r and i still carry the second object
+    assert "PS1: objects within 1' in the band" in [l for l, _ in ff.ps1_checks(s, 'g', OFF)]
