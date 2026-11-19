@@ -27,9 +27,10 @@ unmatched PS1 object), and every band of it is judged in the same order, each st
      close to another object is most often a piece of the same light that the other survey, or the match, assigned to
      that object (a galaxy's outskirts, a source one survey merged with a neighbour), not a source the other survey
      missed;
-  3. detected: each side's status (`band_status`) is D (S/N >= SNR_MIN), L (below it: a ZTF detection under SNR_MIN,
-     or a PS1 measurement, forced fluxes <= 0 included), U (no ZTF detection where ZTF covers), X (untrustworthy) or
-     U for PS1 too where there is no PS1 object: no measurement, the limit stands in. `COMPARISON` maps the pair to
+  3. detection and comparison: on the usable sides (`usable_sides`, step 1: else X) each side's status
+     (`detection_status`, step 2) is D (S/N >= SNR_MIN), L (below it: a ZTF detection under SNR_MIN, or a PS1
+     measurement, forced fluxes <= 0 included) or U (nothing measured: no ZTF detection, no PS1 object; the limit
+     stands in). `COMPARISON` (step 3) maps the pair to
      what the band compares, `{b}_cat`: 0 ZTF against PS1, 1 ZTF
      against PS1's forced measurement where there is one below SNR_MIN and brighter than the PS1 limit, else against
      the PS1 limit, 2 PS1 against the ZTF limit, -1 nothing. Each survey's limit is the quadrant's magnitude at
@@ -408,14 +409,28 @@ def _passes(checks: List[Tuple[str, np.ndarray]]) -> np.ndarray:
     return np.logical_and.reduce([ok for _, ok in checks])
 
 
-def band_status(src: pd.DataFrame, b: str, point: np.ndarray, cuts: Cuts = Cuts()) -> Tuple[np.ndarray, np.ndarray]:
-    """(ZTF, PS1) status of band b per object: 'D' S/N >= SNR_MIN, 'L' below it, 'U' no ZTF detection, 'X' fails a
-    trust check; a PS1 side without a PS1 object is U as well (no measurement: the limit)."""
-    z = np.where(~_passes(ztf_checks(src, b, point)), 'X',
-                 np.where(~src[f'{b}_ztf_det'].values, 'U', np.where(src[f'{b}_ztf_snr'].values >= SNR_MIN, 'D', 'L')))
-    p = np.where(~_passes(ps1_checks(src, b, cuts)), 'X',                            # a bad skycell is X even without a PS1 object
-                 np.where(src.ps1_idx.values < 0, 'U', np.where(src[f'{b}_ps1_snr'].values >= SNR_MIN, 'D', 'L')))
+def usable_sides(src: pd.DataFrame, b: str, point: np.ndarray, cuts: Cuts = Cuts()) -> Tuple[np.ndarray, np.ndarray]:
+    """Step 1, quality: (ZTF usable, PS1 usable) for band b per object, each side passing all of its checks
+    (`ztf_checks`, `ps1_checks`). A side that fails is X in `band_status`: nothing on it, measurement or limit, is
+    compared. A bad skycell makes the PS1 side unusable even without a PS1 object."""
+    return _passes(ztf_checks(src, b, point)), _passes(ps1_checks(src, b, cuts))
+
+
+def detection_status(src: pd.DataFrame, b: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Step 2, detection: (ZTF, PS1) status of band b per object, what each survey has there: 'D' a measurement at
+    S/N >= SNR_MIN, 'L' a measurement below it (a ZTF detection under SNR_MIN, a PS1 measurement, forced fluxes
+    included), 'U' nothing measured (no ZTF detection, or no PS1 object): the survey's limit stands in."""
+    z = np.where(~src[f'{b}_ztf_det'].values, 'U', np.where(src[f'{b}_ztf_snr'].values >= SNR_MIN, 'D', 'L'))
+    p = np.where(src.ps1_idx.values < 0, 'U', np.where(src[f'{b}_ps1_snr'].values >= SNR_MIN, 'D', 'L'))
     return z, p
+
+
+def band_status(src: pd.DataFrame, b: str, point: np.ndarray, cuts: Cuts = Cuts()) -> Tuple[np.ndarray, np.ndarray]:
+    """(ZTF, PS1) status of band b per object: the detection status (`detection_status`) on the usable sides
+    (`usable_sides`), 'X' on the others."""
+    z_ok, p_ok = usable_sides(src, b, point, cuts)
+    z, p = detection_status(src, b)
+    return np.where(z_ok, z, 'X'), np.where(p_ok, p, 'X')
 
 
 # (ZTF status, PS1 status) -> the band's comparison; every other pair compares nothing (-1)
@@ -916,9 +931,9 @@ def annotate_bright_stars(src: pd.DataFrame, stars: pd.DataFrame, out_to: float 
 COMBOS = ('gri', 'gr', 'gi', 'ri')                  # band combinations an object can be counted under
 GROUPS = {                                          # what each waterfall step decides, in pipeline order
     'structure': 'what is compared',
-    'quality': 'is the measurement reliable?',
+    'quality': 'is the data usable?',
+    'comparison': 'does the band compare anything?',
     'confident': 'are we confident the object is real?',
-    'detected': 'is it detected?',
     'population': 'is it from a population we want?',
     'interesting': 'is it interesting?',
     'best': 'is it among the best?',
@@ -1063,14 +1078,15 @@ COMPARABLE = '>= 2 comparable bands of one kind'      # the step that ends the s
 
 def quality_steps(src: pd.DataFrame, point: np.ndarray, cuts: Cuts = Cuts()) -> List[Tuple[str, str, Dict[str, np.ndarray]]]:
     """The shared per-band steps every object goes through, (group, label, {band: passes}) in order: what each band
-    starts from (measured by either survey), the quality checks of both sides, then whether the band is compared
-    (`{b}_cat` >= 0: S/N >= SNR_MIN on a side, of the object's catalog's kind)."""
+    starts from (measured by either survey), the quality checks of both sides (step 1), then whether the band is
+    compared (`{b}_cat` >= 0: a comparison kind from the detection statuses, step 2 and 3, of the object's catalog's
+    kind, step 4). Detection itself drops nothing, so it is not a step here."""
     def per_band(group, checks_of):             # band -> [(label, passes)], the same labels in every band
         checks = {b: checks_of(b) for b in BANDS}
         return [(group, label, {b: checks[b][i][1] for b in BANDS}) for i, (label, _) in enumerate(checks[BANDS[0]])]
     start = per_band('structure', lambda b: [('measured by ZTF or PS1', src[f'{b}_ztf_det'].values | src[f'{b}_ps1_meas'].values)])
     quality = per_band('quality', lambda b: ztf_checks(src, b, point) + ps1_checks(src, b, cuts))
-    comparable = per_band('detected', lambda b: [(COMPARABLE, src[f'{b}_cat'].values >= 0)])
+    comparable = per_band('comparison', lambda b: [(COMPARABLE, src[f'{b}_cat'].values >= 0)])
     return start + quality + comparable
 
 

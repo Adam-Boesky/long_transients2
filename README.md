@@ -2,49 +2,56 @@
 
 ## The filtering pipeline at a glance
 
-```
-ZTF deep-reference DAOPhot catalogs (g, r, i)        PS1 DR2 stack catalog (grizy, one row per object)
-   + our Kron photometry on the reference images        + MAST's bad-skycell list
-            │                                                   │
-            └──────────── 1″ cross-match ───────────────────────┘
-                                 │
-                   one row per object: ZTF object (+ PS1 match) or PS1-only object
-                                 │
-                 ┌───────────────▼────────────────┐
-                 │  SHARED STAGE (every object)    │
-                 │  per band, per survey:          │
-                 │   characterize  → D / L / U     │  measurement at S/N ≥ 5 / below / none
-                 │   quality       → X             │  coverage, masks, flags, bad stacks, bad skycells
-                 │   compare?      → kind          │  two-sided · vs PS1 limit · vs ZTF limit · nothing
-                 └───────────────┬────────────────┘
-                                 │  ≥ 2 comparable bands of one kind?
-            ┌────────────────────┼────────────────────┐───────────────► not comparable (exit, with reason)
-            ▼                    ▼                    ▼
-         in_both              in_ztf              in_pstarr
-      (two-sided)       (ZTF vs PS1 limit)    (PS1 vs ZTF limit)
-            │                    │                    │
-            ├─ confident: real object? (star mask, sharpness; isolation & Kron containment for one-sided; nStack ≥ 2)
-            ├─ population: not Galactic (Gaia proper motion, parallax)
-            │
-            ▼
-   ┌────────────────────────────────────────────────────────────────┐
-   │ CALIBRATE on what is left                                      │
-   │  recovery limits: 90% recovery of the other survey's objects   │  per quadrant, PSF & Kron
-   │  envelope: KDE of ZTF − PS1 vs mag from the two-sided bands    │  clipped
-   └────────────────────────────┬───────────────────────────────────┘
-                                ▼
-            σ per band  (limit bands clipped to the direction the limit supports)
-                                │
-            ├─ interesting: |σ| > 3 in ≥ 2 bands, ≥ 2 of the same sign
-            ├─ best: every measured side at S/N ≥ 10, rule re-checked
-                                ▼
-                 candidates  (in_both / in_ztf / in_pstarr)
+```mermaid
+flowchart TD
+    IN["<b>Input</b><br/>one row per object: ZTF detections in g, r, i (DAOPhot + our Kron photometry)<br/>+ the matched PS1 stack object, or a PS1-only object"]
+    Q["<b>1 · Quality</b> — per band, per survey<br/>is the data here usable?<br/><i>usable, or X</i>"]
+    D["<b>2 · Detection</b> — per band, per usable side<br/>what does the survey have?<br/><i>D measured at S/N ≥ 5 · L measured below · U nothing: its limit stands in</i>"]
+    C["<b>3 · Comparison</b> — per band, from the (ZTF, PS1) pair<br/>(D, D) ZTF vs PS1 · (D, L/U) ZTF vs PS1 limit · (L/U, D) PS1 vs ZTF limit<br/><i>an X on either side, or (L/U, L/U): no comparison</i>"]
+    S{"<b>4 · Sorting</b> — per object<br/>≥ 2 bands of one comparison kind?"}
+    NC["not comparable<br/><i>with the reason</i>"]
+    B["in_both"]
+    Z["in_ztf"]
+    P["in_pstarr"]
+    CONF["<b>5 · Confident</b> — is it one real object?<br/>bright-star mask · sharpness (point sources)<br/>in_ztf, in_pstarr: no object within 3″, outside brighter objects' Kron apertures<br/>in_both, in_pstarr: PS1 not BAD_STACK, not SUSPECT_STACK · in_pstarr: nStackDetections ≥ 2"]
+    POP["<b>6 · Population</b> — not Galactic<br/>no Gaia proper motion or parallax at 5σ"]
+    CAL["<b>7 · Calibrate</b> on what is left<br/>90 % recovery limits per quadrant, PSF and Kron · Δmag envelope from the two-sided bands"]
+    INT["<b>8 · Interesting</b><br/>|σ| > 3 in ≥ 2 bands, ≥ 2 of them the same sign"]
+    OUT["<b>candidates</b><br/>with every band's S/N: the website applies any S/N threshold"]
+    IN --> Q --> D --> C --> S
+    S -- no --> NC
+    S -- two-sided --> B
+    S -- ZTF vs limit --> Z
+    S -- PS1 vs limit --> P
+    B --> CONF
+    Z --> CONF
+    P --> CONF
+    CONF --> POP --> CAL --> INT --> OUT
 ```
 
-Five ideas, top to bottom: **match** → **characterize & sort** (the shared stage: what each band is, whether it's
-trustworthy, what it can compare; the catalog is just the kind of comparison) → **clean** the catalogs (real, not
-Galactic) → **calibrate** on the survivors (limits, envelope) → **select** (σ, the ≥ 2-band rules, S/N ≥ 10).
-Code: `Source_Analysis/filter_field.py`; walkthrough with field 860: `Notebooks/pipeline_review_860.ipynb`.
+Every band of every object ends step 3 with one of these on each survey's side:
+
+| status | meaning |
+|---|---|
+| X | a quality check failed: this survey's side of the band is unusable, so the band compares nothing |
+| D | measured at S/N ≥ 5 |
+| L | measured below S/N 5: used if brighter than the survey's limit, else the limit stands in |
+| U | nothing measured: the survey's completeness limit stands in |
+
+The quality checks (step 1), each answering "is the data at this position sound?" and nothing about the object:
+
+| ZTF side | PS1 side |
+|---|---|
+| the reference image covers the position | not one of MAST's mis-registered polar skycells (with or without a PS1 object) |
+| DAOPhot flags = 0 | stack nFrames ≥ 4 |
+| > 5 px from a masked pixel (at the detection, or at the PS1 position for a limit) | residual sky ≤ 1e-7 |
+| extended objects: Kron aperture ≤ 10 % masked | not DEFECT, PEAK_ON_SPIKE, ON_SPIKE |
+| | measured in the band (a PS1 object with no row for the band tells us nothing) |
+| | psfQfPerfect > 0.85 |
+
+Code: `Source_Analysis/filter_field.py` (`usable_sides`, `detection_status`, `COMPARISON`, `object_catalog`, `real_checks`, `completeness_limits`, `kde_envelopes`,
+`judge_bands`); every object's record of what happened to it is in `objects.parquet` (`{b}_dropped_by`, `outcome`; `python -m Source_Analysis.filter_field explain FIELD RA DEC`).
+Walkthrough with field 860: `Notebooks/pipeline_review_860.ipynb`.
 
 ## Workflow Overview
 ### 1. Extract

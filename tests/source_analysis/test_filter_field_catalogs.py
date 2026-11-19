@@ -98,6 +98,7 @@ def test_the_chain_keeps_an_object_only_with_two_compared_bands(src, case):
 def test_a_flagged_ps1_band_is_never_read_as_a_non_detection(src):
     z, p = ff.band_status(src.loc[['8']], 'i', np.array([True]))
     assert (z[0], p[0]) == ('D', 'X')
+    assert ff.detection_status(src.loc[['8']], 'i')[1][0] == 'D' and not ff.usable_sides(src.loc[['8']], 'i', np.array([True]))[1][0]   # a measurement, on an unusable side
     assert src.loc['8', 'i_ps1_use'] != src.loc['8', 'i_ps1_limit']
 
 
@@ -394,7 +395,7 @@ def test_every_step_carries_its_group_in_pipeline_order():
     assert wf.groups[0] == 'structure' and [order.index(g) for g in wf.groups] == sorted(order.index(g) for g in wf.groups)
     assert set(wf.groups) == {'structure', 'confident', 'population', 'interesting', 'best'}
     shared = ff.quality_waterfall(s, OFF)
-    assert shared.groups[0] == 'structure' and set(shared.groups) == {'structure', 'quality', 'detected'} and shared.steps[-1] == ff.COMPARABLE
+    assert shared.groups[0] == 'structure' and set(shared.groups) == {'structure', 'quality', 'comparison'} and shared.steps[-1] == ff.COMPARABLE
     assert 'group' in wf.stats.columns and wf.stats.group.iloc[-1] == 'best'
 
 
