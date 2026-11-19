@@ -153,9 +153,10 @@ def covering_skycells(ra: np.ndarray, dec: np.ndarray) -> np.ndarray:
 def is_bad(ra: np.ndarray, dec: np.ndarray, any_covering: bool = True) -> np.ndarray:
     """Whether a position lies in one of MAST's bad polar skycells: any skycell covering it (`covering_skycells`,
     the liberal reading, right for a position where PS1 has no object), or only its primary one (`skycell_of`)."""
-    bad = bad_cells()
+    codes = np.array([100 * p + c for p, c in bad_cells()], np.int64)
     if any_covering:
         cells = covering_skycells(ra, dec)
-        return np.array([any((int(p), int(c)) in bad for p, c in row if p >= 0) for row in cells], bool)
+        code = 100 * cells[:, :, 0].astype(np.int64) + cells[:, :, 1]
+        return np.isin(code, codes).any(axis=1)                      # an absent cell is -1: never a bad code
     proj, cell = skycell_of(ra, dec)
-    return np.array([(int(p), int(c)) in bad for p, c in zip(proj, cell)], bool)
+    return np.isin(100 * proj.astype(np.int64) + cell, codes)

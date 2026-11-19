@@ -7,7 +7,7 @@
 #SBATCH -p shared
 #SBATCH -c 1
 #SBATCH --mem=48G
-#SBATCH -t 0-04:00
+#SBATCH -t 0-01:00
 #SBATCH -o /n/holystore01/LABS/berger_lab/Users/aboesky/long_transients2/logs/%x_%j.out
 #SBATCH -e /n/holystore01/LABS/berger_lab/Users/aboesky/long_transients2/logs/%x_%j.err
 set -uo pipefail

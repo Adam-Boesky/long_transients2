@@ -113,6 +113,7 @@ PSF_QF_MIN = 0.85               # PS1 psfQfPerfect: PSF-weighted unmasked fracti
 PS1_ONLY_MIN_STACK_DETECTIONS = 2   # in_pstarr objects need PS1 nStackDetections >= this (no ZTF detection confirms them)
 BRIGHT_STAR_G_MAX = 16.0        # Gaia stars brighter than this get a mask circle and spike boxes
 SELF_ARCSEC = 1.0               # a mask star this close to an object is the object itself
+KRON_REACH_ARCSEC = 40.0        # Kron containment is searched out to this radius; real apertures reach ~30"
 SPIKE_PA = (0.0, 90.0, 30.0, 150.0)   # ZTF diffraction spikes: position angles (deg, N through E) of the four boxes
 SPIKE_WIDTH_ARCSEC = 12.0       # full width of a spike box
 SPIKE_GROWTH, SPIKE_ANCHOR_G = 1.15, 16.0   # spike half-length = R * SPIKE_GROWTH ** (SPIKE_ANCHOR_G - G): R at G = 16, ~4 R at G = 6
@@ -865,14 +866,14 @@ def annotate_skycells(src: pd.DataFrame) -> pd.DataFrame:
     object in a skycell overlap can draw its bands from different skycells, and a measurement from a good one stays
     good). Without a PS1 object, every band is bad if any skycell covering the position is (`ps1_skycells.is_bad`):
     PS1 may have seen nothing there because its stack is bad."""
-    bad = ps1_skycells.bad_cells()
+    bad_codes = np.array([100 * p + c for p, c in ps1_skycells.bad_cells()], np.int64)
     has = src.ps1_idx.values >= 0
     empty_bad = np.zeros(len(src), bool)
     empty_bad[~has] = ps1_skycells.is_bad(src.ra.values[~has], src.dec.values[~has])
     cols = {}
     for b in BANDS:
-        own = np.array([(int(p), int(c)) in bad for p, c in zip(src[f'{b}_ps1_projcell'].values, src[f'{b}_ps1_skycell'].values)], bool)
-        cols[f'{b}_ps1_skycell_bad'] = np.where(has, own, empty_bad)
+        code = 100 * np.nan_to_num(src[f'{b}_ps1_projcell'].values, nan=-1).astype(np.int64) + np.nan_to_num(src[f'{b}_ps1_skycell'].values, nan=-1).astype(np.int64)
+        cols[f'{b}_ps1_skycell_bad'] = np.where(has, np.isin(code, bad_codes), empty_bad)
     cols['ps1_skycell_bad'] = np.logical_or.reduce([cols[f'{b}_ps1_skycell_bad'] for b in BANDS])
     return _attach(src, cols)
 
@@ -1173,16 +1174,16 @@ def annotate_neighbours(src: pd.DataFrame) -> pd.DataFrame:
     dist, k = tree.query(pos, k=3, distance_upper_bound=60 / 3600)                       # up to two entries are the object's own
     own = owner[np.clip(k, 0, len(owner) - 1)] == np.arange(len(src))[:, None]
     nearest = np.where(own | ~np.isfinite(dist), np.inf, dist).min(axis=1)
+    # inside a brighter entry's Kron aperture: every object within each aperture's radius (searched out to
+    # KRON_REACH_ARCSEC: a larger PS1 KronRad is a deblending accident), as one flat pair list
     in_kron = np.zeros(len(src), bool)
-    with_rad = np.flatnonzero(np.isfinite(e_rad))                                      # Kron apertures reach ~30" at most
-    sub = cKDTree(entries[with_rad])
-    for i, hits in enumerate(sub.query_ball_point(pos, 40 / 3600)):
-        if not hits:
-            continue
-        h = with_rad[np.asarray(hits)]
-        h = h[(owner[h] != i) & (e_mag[h] < own_mag[i])]
-        if len(h):
-            in_kron[i] = bool(np.any(np.hypot(*(entries[h] - pos[i]).T) * 3600 <= e_rad[h]))
+    with_rad = np.flatnonzero(np.isfinite(e_rad))
+    hits = cKDTree(pos).query_ball_point(entries[with_rad], np.minimum(e_rad[with_rad], KRON_REACH_ARCSEC) / 3600, return_sorted=False)
+    n_hits = np.fromiter((len(h) for h in hits), int, len(hits))
+    e = np.repeat(with_rad, n_hits)                                                     # the entry of each pair
+    i = np.fromiter((j for h in hits for j in h), int, int(n_hits.sum()))               # the object inside it
+    inside = (owner[e] != i) & (e_mag[e] < own_mag[i])
+    in_kron[i[inside]] = True
     return _attach(src, {'nearest_other_arcsec': np.where(np.isfinite(nearest), nearest * 3600, np.nan).astype(np.float32),
                          'inside_brighter_kron': in_kron})
 
