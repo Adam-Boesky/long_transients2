@@ -111,7 +111,6 @@ Object-level:
 | `ps1_ra`, `ps1_dec` | float64 | O | PS1 object's own position (`ps1.ra/dec`: stack, else mean) |
 | `ps1_qualityFlag` | int64 | N | `qualityFlag` (0 without a PS1 object) |
 | `ps1_nStackDetections` | int16 | N | `nStackDetections` (0 without) |
-| `ps1_projcell`, `ps1_skycell` | int32 / int16 | N | `projectionID`, `skyCellID` of the object's best row (-1 without) |
 
 Per band, ZTF side (from `ztf_{b}.parquet` via `{b}_idx`; NaN where not detected):
 
@@ -162,8 +161,6 @@ Per band, PS1 side (from the PS1 object; NaN / 0 / -1 without one):
 
 | column | dtype | meaning |
 |---|---|---|
-| `{b}_ps1_skycell_bad` | bool | band b's PS1 row comes from a MAST-flagged polar skycell; without a PS1 object, any skycell covering the position is flagged |
-| `ps1_skycell_bad` | bool | any band |
 | `ps1_catalog_missing` | bool | no PS1 object and the position is in a DR2 missing-catalog region (`ps1_skycells.catalog_missing`) |
 
 ### 4d. Bright-star mask (`annotate_bright_stars`, Gaia DR2 G < 16)

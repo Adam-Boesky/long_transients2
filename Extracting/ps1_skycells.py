@@ -166,16 +166,51 @@ def covering_skycells(ra: np.ndarray, dec: np.ndarray) -> np.ndarray:
     return out
 
 
+def bad_codes() -> np.ndarray:
+    """MAST's bad skycells as integer codes 100 * projection cell + skycell, for `np.isin`."""
+    return np.array([100 * p + c for p, c in bad_cells()], np.int64)
+
+
+@lru_cache(maxsize=1)
+def _bad_cell_discs() -> Tuple[np.ndarray, float]:
+    """(unit vectors of the bad skycells' centres, a chord radius enclosing any skycell): a cheap prefilter."""
+    centres = []
+    for p, c in bad_cells():
+        r = GRID[(GRID[:, PROJCELL] <= p).nonzero()[0][-1]]
+        ix, iy = c % 10, c // 10
+        x = 1 + ix * (r[XCELL] - 2 * OVERLAP_PX) + r[XCELL] / 2
+        y = 1 + iy * (r[YCELL] - 2 * OVERLAP_PX) + r[YCELL] / 2
+        ra, dec = cell_wcs(int(p)).all_pix2world(x, y, 1)
+        centres.append((float(ra), float(dec)))
+    ra, dec = np.radians(np.array(centres)).T
+    xyz = np.c_[np.cos(dec) * np.cos(ra), np.cos(dec) * np.sin(ra), np.sin(dec)]
+    half_diag = np.radians(np.hypot(GRID[:, XCELL].max(), GRID[:, YCELL].max()) / 2 * PIXEL_ARCSEC / 3600) * 1.1
+    return xyz, 2 * np.sin(half_diag / 2)
+
+
 def is_bad(ra: np.ndarray, dec: np.ndarray, any_covering: bool = True) -> np.ndarray:
     """Whether a position lies in one of MAST's bad polar skycells: any skycell covering it (`covering_skycells`,
-    the liberal reading, right for a position where PS1 has no object), or only its primary one (`skycell_of`)."""
-    codes = np.array([100 * p + c for p, c in bad_cells()], np.int64)
+    the liberal reading, right for a position where PS1 has no object), or only its primary one (`skycell_of`). Only
+    positions within a skycell's reach of a bad cell's centre are projected, so this is cheap away from the pole."""
+    from scipy.spatial import cKDTree
+    ra, dec = np.asarray(ra, float), np.asarray(dec, float)
+    out = np.zeros(len(ra), bool)
+    if len(ra) == 0:
+        return out
+    centres, reach = _bad_cell_discs()
+    r, d = np.radians(ra), np.radians(dec)
+    near = np.unique(np.concatenate([np.asarray(h, int) for h in cKDTree(np.c_[np.cos(d) * np.cos(r), np.cos(d) * np.sin(r), np.sin(d)])
+                                     .query_ball_point(centres, reach)] + [np.zeros(0, int)]))
+    if len(near) == 0:
+        return out
+    codes = bad_codes()
     if any_covering:
-        cells = covering_skycells(ra, dec)
-        code = 100 * cells[:, :, 0].astype(np.int64) + cells[:, :, 1]
-        return np.isin(code, codes).any(axis=1)                      # an absent cell is -1: never a bad code
-    proj, cell = skycell_of(ra, dec)
-    return np.isin(100 * proj.astype(np.int64) + cell, codes)
+        cells = covering_skycells(ra[near], dec[near])
+        out[near] = np.isin(100 * cells[:, :, 0].astype(np.int64) + cells[:, :, 1], codes).any(axis=1)   # absent cells are -1
+    else:
+        proj, cell = skycell_of(ra[near], dec[near])
+        out[near] = np.isin(100 * proj.astype(np.int64) + cell, codes)
+    return out
 
 
 

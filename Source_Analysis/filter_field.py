@@ -141,8 +141,7 @@ NO_CUTS = Cuts(bright_star_mask=False, sharp_max=None, sharp_point_only=False, p
 
 BAND_COLS = ['ra', 'dec', 'ccd', 'qid', 'mag', 'magerr', 'snr', 'chi', 'sharp', 'flags', 'nan_dist_px', 'maglim', 'zkron', 'zkron_err', 'zkron_masked', 'zkron_rap']
 OBJ_COLS = ['ra', 'dec'] + [f'{b}_{c}' for b in BANDS for c in ('idx', 'covered', 'ccd', 'qid', 'nan_dist_px', 'maglim')]
-PS1_COLS = (['PanSTARR_ID', 'ra', 'dec', 'qualityFlag', 'nStackDetections',
-             'projectionID', 'skyCellID']
+PS1_COLS = (['PanSTARR_ID', 'ra', 'dec', 'qualityFlag', 'nStackDetections']
             + [f'{b}_{c}' for b in BANDS for c in ('detected', 'projcell', 'skycell')]
             + [f'{b}{c}' for b in BANDS for c in ('PSFMag', 'PSFMagErr', 'KronMag', 'KronMagErr', 'PSFFlux', 'PSFFluxErr',
                                                   'infoFlag', 'infoFlag2', 'psfQfPerfect', 'sky', 'nFrames', 'KronRad')]
@@ -253,8 +252,8 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
 
     Object-level: `ra`, `dec` (the ZTF position for ZTF objects), `ps1_ra`, `ps1_dec` (the PS1 object's own position),
     `ztf_idx`, `ps1_idx` (-1 without one), `ps1_objid` (PS1's objID, -1 without a PS1 object), `ps1_qualityFlag`,
-    `ps1_nStackDetections`, `ps1_projcell`, `ps1_skycell` (and `{b}_ps1_projcell`, `{b}_ps1_skycell`: the skycell each
-    band's row came from), `ccd`, `qid` (the r-band quadrant, else g, else i: a label for cutouts). Per band b: the ZTF
+    `ps1_nStackDetections`, `{b}_ps1_projcell`, `{b}_ps1_skycell` (the skycell each band's PS1 row came from; -1 without
+    a PS1 object), `ccd`, `qid` (the r-band quadrant, else g, else i: a label for cutouts). Per band b: the ZTF
     image the band is judged in, `{b}_ccd`, `{b}_qid` (the detection's own image; for a band without a detection the
     covering image `field_tables.ztf_coverage` chose: on valid pixels, clean, deepest), with `{b}_ztf_covered`,
     `{b}_ztf_nan_dist` (distance to its nearest masked pixel) and `{b}_ztf_maglim` (its nominal depth); `{b}_ztf_det`,
@@ -288,8 +287,6 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
         'ps1_objid': from_ps1(ps1.PanSTARR_ID.values.astype(np.int64), -1),
         'ps1_qualityFlag': from_ps1(ps1.qualityFlag.fillna(0).values.astype(np.int64), 0),
         'ps1_nStackDetections': from_ps1(ps1.nStackDetections.fillna(0).values.astype(np.int16), 0),
-        'ps1_projcell': from_ps1(ps1.projectionID.fillna(-1).values.astype(np.int32), -1),      # the skycell PS1's row came from
-        'ps1_skycell': from_ps1(ps1.skyCellID.fillna(-1).values.astype(np.int16), -1),
         'ps1_ra': from_ps1(ps1.ra.values, np.nan), 'ps1_dec': from_ps1(ps1.dec.values, np.nan),
     }
     nan_p = np.full(n_p, np.nan)
@@ -395,7 +392,7 @@ def ps1_checks(src: pd.DataFrame, b: str, cuts: Cuts = Cuts()) -> List[Tuple[str
            if sky_max is not None else [])
     frames = ([(f'PS1: stack nFrames >= {min_nframes}', none | (src[f'{b}_ps1_nFrames'].values >= min_nframes))]
               if min_nframes is not None else [])
-    stack = [('PS1: not in a flagged polar skycell', ~src[f'{b}_ps1_skycell_bad'].values),
+    stack = [('PS1: not in a flagged polar skycell', ~ps1_skycell_bad(src, b)),
              ('PS1: catalog covers the position', ~src.ps1_catalog_missing.values),
              (f"PS1: objects within {PS1_COVERAGE_ARCMIN:g}' in the band", (~none) | src[f'{b}_ps1_covered'].values)]
     return (stack + sky + frames + [(label, none | ~_bits(src[f'{b}_ps1_{col}'].values, bit)) for label, col, bit in PS1_BAND_FLAGS]
@@ -466,7 +463,7 @@ def completeness_references(src: pd.DataFrame, cuts: Cuts = Cuts()) -> Tuple[Dic
     clear_of_kron = ~src.inside_brighter_kron.values if cuts.neighbour_kron else np.ones(len(src), bool)
     pm_ok, plx_ok = gaia_population_ok(src)
     population_ok = pm_ok & plx_ok
-    position_ok = mask & isolated & clear_of_kron & population_ok & ~src.ps1_skycell_bad.values   # no PS1 data to recover with, or to be recovered
+    position_ok = mask & isolated & clear_of_kron & population_ok & ~ps1_skycell_bad(src)   # no PS1 data to recover with, or to be recovered
     z_sharp_ok = ~sharpness_fails(src, point, cuts)
     z_trust = {b: _passes(ztf_checks(src, b, point)) & src[f'{b}_ztf_det'].values & (src[f'{b}_ztf_snr'].values >= SNR_MIN) for b in BANDS}
     p_trust = {b: _passes(ps1_checks(src, b, cuts)) & src[f'{b}_ps1_detected'].values & (src[f'{b}_ps1_snr'].values >= SNR_MIN) for b in BANDS}
@@ -891,25 +888,28 @@ def bright_stars(field_id: int, data_dir: Optional[str] = None, box: Optional[Tu
 
 
 def annotate_skycells(src: pd.DataFrame) -> pd.DataFrame:
-    """`{b}_ps1_skycell_bad` per band and `ps1_skycell_bad` (any band): the PS1 data come from one of MAST's
-    mis-registered polar skycells (`ps1_skycells.bad_cells`), where nothing PS1 measured is usable. With a PS1
-    object, each band is judged by the skycell its own row came from (`{b}_ps1_projcell`, `{b}_ps1_skycell`; an
-    object in a skycell overlap can draw its bands from different skycells, and a measurement from a good one stays
-    good). Without a PS1 object, every band is bad if any skycell covering the position is (`ps1_skycells.is_bad`):
-    PS1 may have seen nothing there because its stack is bad. `ps1_catalog_missing`: no PS1 object at a position
+    """`ps1_catalog_missing`: no PS1 object at a position
     where DR2 has no catalog at all (`ps1_skycells.catalog_missing`: MAST's missing-data boxes, or south of its
     declination cut), so the absence says nothing."""
-    bad_codes = np.array([100 * p + c for p, c in ps1_skycells.bad_cells()], np.int64)
     has = src.ps1_idx.values >= 0
-    empty_bad = np.zeros(len(src), bool)
-    empty_bad[~has] = ps1_skycells.is_bad(src.ra.values[~has], src.dec.values[~has])
-    cols = {}
-    for b in BANDS:
-        code = 100 * np.nan_to_num(src[f'{b}_ps1_projcell'].values, nan=-1).astype(np.int64) + np.nan_to_num(src[f'{b}_ps1_skycell'].values, nan=-1).astype(np.int64)
-        cols[f'{b}_ps1_skycell_bad'] = np.where(has, np.isin(code, bad_codes), empty_bad)
-    cols['ps1_skycell_bad'] = np.logical_or.reduce([cols[f'{b}_ps1_skycell_bad'] for b in BANDS])
-    cols['ps1_catalog_missing'] = ~has & ps1_skycells.catalog_missing(src.ra.values, src.dec.values)   # no PS1 object where DR2 has no catalog
-    return _attach(src, cols)
+    return _attach(src, {'ps1_catalog_missing': ~has & ps1_skycells.catalog_missing(src.ra.values, src.dec.values)})
+
+
+def ps1_skycell_bad(src: pd.DataFrame, b: Optional[str] = None) -> np.ndarray:
+    """PS1's data for band b (any band if None) come from one of MAST's mis-registered polar skycells
+    (`ps1_skycells.bad_cells`), where nothing PS1 measured is usable. With a PS1 object, each band is judged by the
+    skycell its own row came from (`{b}_ps1_projcell`, `{b}_ps1_skycell`; an object in a skycell overlap can draw its
+    bands from different skycells, and a measurement from a good one stays good). Without a PS1 object, every band is
+    bad if any skycell covering the position is (`ps1_skycells.is_bad`): PS1 may have seen nothing there because its
+    stack is bad."""
+    has = src.ps1_idx.values >= 0
+    out = np.zeros(len(src), bool)
+    out[~has] = ps1_skycells.is_bad(src.ra.values[~has], src.dec.values[~has])
+    codes = ps1_skycells.bad_codes()
+    for band in ([b] if b else BANDS):
+        code = 100 * src[f'{band}_ps1_projcell'].values.astype(np.int64) + src[f'{band}_ps1_skycell'].values.astype(np.int64)
+        out[has] |= np.isin(code[has], codes)
+    return out
 
 
 def spike_half_length(mag: np.ndarray) -> np.ndarray:

@@ -20,7 +20,7 @@ PS1 = {'D': (1e-5, 1e-6, 0, 0, 1.0), 'L': (3e-6, 1e-6, 0, 0, 1.0), 'F': (-1e-6, 
 
 def object_row(ztf: str, ps1: str, n_stack_detections: int = 3) -> dict:
     """One object from three-letter g, r, i status codes per survey, in the columns `object_table` writes."""
-    r = {'ra': 10.0, 'dec': 20.0, 'ccd': 1, 'qid': 1, **{f'{b}_{c}': v for b in BANDS for c, v in (('ccd', 1), ('qid', 1))}, 'ps1_qualityFlag': 0, 'ps1_skycell_bad': False, 'ps1_catalog_missing': False, **{f'{b}_ps1_covered': True for b in BANDS}, **{f'{b}_ps1_skycell_bad': False for b in BANDS},
+    r = {'ra': 10.0, 'dec': 20.0, 'ccd': 1, 'qid': 1, **{f'{b}_{c}': v for b in BANDS for c, v in (('ccd', 1), ('qid', 1))}, 'ps1_qualityFlag': 0, 'ps1_catalog_missing': False, **{f'{b}_ps1_covered': True for b in BANDS}, **{f'{b}_ps1_{c}': 0 for b in BANDS for c in ('projcell', 'skycell')},
          'ps1_nStackDetections': n_stack_detections,
          'ztf_idx': -1 if set(ztf) <= {'-', 'N'} else 0, 'ps1_idx': -1 if set(ps1) == {'-'} else 0,
          **{c: np.nan for c in ('gaia_pm', 'gaia_pmra', 'gaia_pmdec', 'gaia_pmra_err', 'gaia_pmdec_err')}, 'gaia_parallax_over_error': np.nan, 'bright_star_d_over_R': np.inf, 'in_star_spike': False, 'bright_star_masked': False,
@@ -403,10 +403,12 @@ def test_every_step_carries_its_group_in_pipeline_order():
 
 
 def test_a_position_in_a_bad_polar_skycell_has_no_usable_ps1_side_with_or_without_a_ps1_object():
-    bad = {'ps1_skycell_bad': True, **{f'{b}_ps1_skycell_bad': True for b in BANDS}}
+    pole = {'ra': 157.9, 'dec': 73.85}                                          # inside bad skycell 2583.046; 2583.056 is good
+    bad = {**pole, **{f'{b}_ps1_{c}': v for b in BANDS for c, v in (('projcell', 2583), ('skycell', 46))}}
     rows = {'in_both, bad cell': {**object_row('DDD', 'DDD'), **bad}, 'in_ztf, bad cell': {**object_row('DDD', '---'), **bad},
             'in_pstarr, bad cell': {**object_row('UUU', 'DDD'), **bad}, 'in_ztf, good cell': object_row('DDD', '---'),
-            'in_both, g from a bad cell': {**object_row('DDD', 'DDD'), 'ps1_skycell_bad': True, 'g_ps1_skycell_bad': True}}
+            'in_both, g from a bad cell': {**object_row('DDD', 'DDD'), **pole, **{f'{b}_ps1_{c}': v for b in BANDS for c, v in (('projcell', 2583), ('skycell', 56))},
+                                           'g_ps1_skycell': 46}}
     s = ff.assign_catalogs(pd.DataFrame(list(rows.values()), index=list(rows)), OFF)
     assert list(s.g_ps1_status) == ['X', 'X', 'X', 'U', 'X'] and list(s.g_cat) == [-1, -1, -1, 1, -1]
     assert list(s.r_ps1_status) == ['X', 'X', 'X', 'U', 'D'] and list(s.r_cat) == [-1, -1, -1, 1, 0]      # only the bad band goes
@@ -428,14 +430,13 @@ def test_skycell_lookup_matches_mast_and_the_bad_list():
     assert sc.is_bad([r for _, r, _ in centres][:50], [d for _, _, d in centres][:50]).all()
 
 
-def test_annotate_skycells_judges_each_band_by_its_own_row_and_is_liberal_without_a_ps1_object():
+def test_the_skycell_check_judges_each_band_by_its_own_row_and_is_liberal_without_a_ps1_object():
     s = pd.DataFrame({'ra': [157.9] * 3, 'dec': [73.85] * 3, 'ps1_idx': [0, 1, -1],
                       'g_ps1_projcell': [2583, 2583, -1], 'g_ps1_skycell': [46, 56, -1],                  # 046 is bad, 056 is not
                       'r_ps1_projcell': [2583, 2583, -1], 'r_ps1_skycell': [56, 46, -1],
                       'i_ps1_projcell': [2583, 2583, -1], 'i_ps1_skycell': [56, 56, -1]})
-    out = ff.annotate_skycells(s)
-    assert list(out.g_ps1_skycell_bad) == [True, False, True] and list(out.r_ps1_skycell_bad) == [False, True, True]
-    assert list(out.i_ps1_skycell_bad) == [False, False, True] and list(out.ps1_skycell_bad) == [True, True, True]
+    assert list(ff.ps1_skycell_bad(s, 'g')) == [True, False, True] and list(ff.ps1_skycell_bad(s, 'r')) == [False, True, True]
+    assert list(ff.ps1_skycell_bad(s, 'i')) == [False, False, True] and list(ff.ps1_skycell_bad(s)) == [True, True, True]
 
 
 def test_the_sharpness_cut_can_be_limited_to_point_sources():
