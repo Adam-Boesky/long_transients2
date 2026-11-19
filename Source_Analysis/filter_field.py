@@ -5,56 +5,50 @@ matched to the deduplicated PS1 catalog at 1"). Every object is a row (a ZTF obj
 unmatched PS1 object), and every band of it is judged in the same order, each step tagged with its purpose (GROUPS;
 `Waterfall.groups`, boxed in `Waterfall.flowchart`):
 
-  1. quality: each survey's side of the band passes its quality checks (`ztf_checks`, `ps1_checks`) or the band is
-     dropped. ZTF: the image covers the position, DAOPhot flags = 0, NAN_RADIUS_PX
-     clear of masked pixels (at the detection, or at the PS1 position for a non-detection) and, for extended objects,
-     a ZTF Kron aperture at most KRON_MAX_MASKED masked. PS1, per band: optionally the residual sky at most `ps1_sky_max` (light the background
-     model left behind, from bright-star halos, large galaxies and stack background steps), the position not in one
-     of MAST's mis-registered polar skycells (`ps1_skycells`; with or without a PS1 object) and at least
-     `ps1_min_nframes` stack input frames (PS1 runs its mixture-model outlier rejection only with more than 6 inputs,
-     Waters et al. 2020; few-frame stacks keep single-exposure artefacts), the defect / spike /
-     star-core / burntool / saturation
-     flags (incl. ON_SPIKE), a measurement in the band (forced photometry counts) and psfQfPerfect > PSF_QF_MIN. An untrustworthy side is never read as a
-     non-detection;
-  2. confident: are we confident the object is real? (`real_checks`, object-wide) Outside every bright star's mask:
-     the circle (`bright_star_radius`) and the four diffraction-spike boxes (`spike_half_length`; optional); optionally a ZTF
-     sharpness (`ztf_sharpness`) within `sharp_max` for point sources (`sharp_point_only`; a point-source statistic,
-     applied to point sources: in field 860 the extended objects it removed were galaxies, two of them known AGN);
-     for in_both and in_pstarr objects nStackDetections >= PS1_MIN_STACK_DETECTIONS and neither BAD_STACK nor
-     SUSPECT_STACK (PS1's verdict on its own detections); for in_ztf and in_pstarr objects, optionally (`annotate_neighbours`), no other
-     object of either survey (ZTF or PS1, matched or not, whether or not it survives any cut) within
-     `isolation_arcsec`, nor inside a brighter object's Kron aperture (`neighbour_kron`): a one-sided object that
-     close to another object is most often a piece of the same light that the other survey, or the match, assigned to
-     that object (a galaxy's outskirts, a source one survey merged with a neighbour), not a source the other survey
-     missed;
-  3. detection and comparison: on the usable sides (`usable_sides`, step 1: else X) each side's status
-     (`detection_status`, step 2) is D (S/N >= SNR_MIN), L (below it: a ZTF detection under SNR_MIN, or a PS1
-     measurement, forced fluxes <= 0 included) or U (nothing measured: no ZTF detection, no PS1 object; the limit
-     stands in). `COMPARISON` (step 3) maps the pair to
-     what the band compares, `{b}_cat`: 0 ZTF against PS1, 1 ZTF
-     against PS1's forced measurement where there is one below SNR_MIN and brighter than the PS1 limit, else against
-     the PS1 limit, 2 PS1 against the ZTF limit, -1 nothing. Each survey's limit is the quadrant's magnitude at
-     which its recovery of the other survey's detections falls to LIMIT_COMPLETENESS (`completeness_limits`: the
-     reference is the other survey's detections that pass their own trust and real checks in >= 2 bands, the
-     population the one-sided candidates come from; in PSF and in Kron magnitude, a band uses the kind it compares),
-     never deeper than the survey's nominal
-     depth: ZTF's MAGLIM, or `ps1_stack.stack_depth` of the stack's nFrames at the position (scaled from Chambers et
-     al. 2016's single-visit and stack 5-sigma depths and capped at the latter).
-     An object's catalog (`object_catalog`) is the kind of comparison its bands carry: at least two two-sided bands
-     -> `in_both` (its one-sided bands are dropped); else at least two one-sided bands, all against the PS1 limit ->
-     `in_ztf`, all against the ZTF limit -> `in_pstarr`; anything else (fewer than two comparable bands, one
-     two-sided band, mixed one-sided kinds) is not comparable (-1, `catalog_reason`) and leaves at the shared stage.
-     So the catalog label is only ever given to an object that will be judged, and limits enter only in in_ztf
-     and in_pstarr, where there is nothing else. A sub-threshold side (L) is a limit on either survey: its own measurement where that is brighter than the
-     survey's limit (PS1's forced photometry; a ZTF detection under SNR_MIN), else the limit.
-  4. undesired population: no Gaia proper motion or parallax at 5 sigma;
-  5. interesting: |sigma| > SIGMA_BOUNDARY in at least two bands, at least two of them of the same sign;
-  6. best (`snr_keep`, optional and off by default, last): a band is kept only if each side measured in its
-     comparison (not a limit) reaches that S/N, and the |sigma| requirement is re-checked on the bands that remain.
-     The envelope is built before this step, from the S/N >= SNR_MIN population. Off, every candidate carries its
-     per-band S/N (`{b}_ztf_snr`, `{b}_ps1_snr`) and the website applies the threshold.
+  1. quality (`usable_sides`): each survey's side of the band passes its quality checks or is X, unusable for a
+     measurement or a limit. ZTF (`ztf_checks`): the image covers the position, DAOPhot flags = 0, NAN_RADIUS_PX clear
+     of masked pixels (at the detection, or at the PS1 position for a non-detection) and, for extended objects, a ZTF
+     Kron aperture at most KRON_MAX_MASKED masked. PS1 (`ps1_checks`): not one of MAST's mis-registered polar
+     skycells (`ps1_skycells`; with or without a PS1 object); without a PS1 object, the DR2 catalog covering the
+     position (MAST's missing-data boxes, its Dec -30 cut) and some PS1 object measured in the band within
+     PS1_COVERAGE_ARCMIN (its stack reaches the position); with one, per band: at least `ps1_min_nframes` stack input
+     frames (PS1 runs its mixture-model outlier rejection only with more than 6 inputs, Waters et al. 2020), residual
+     sky at most `ps1_sky_max`, none of the DEFECT / PEAK_ON_SPIKE / ON_SPIKE / ON_STARCORE / ON_BURNTOOL / SATSTAR /
+     SATSTAR_PROFILE flags (PS1_BAND_FLAGS), a measurement in the band (forced photometry counts) and psfQfPerfect >
+     PSF_QF_MIN;
+  2. detection (`detection_status`): on a usable side, D a measurement at S/N >= SNR_MIN, L one below it (a ZTF
+     detection under SNR_MIN, a PS1 measurement, forced fluxes <= 0 included), U nothing measured (no ZTF detection, no
+     PS1 object): the survey's limit stands in;
+  3. comparison and sorting: `COMPARISON` maps the (ZTF, PS1) pair to what the band compares, `{b}_cat`: 0 ZTF
+     against PS1 (D, D); 1 ZTF against the PS1 limit (D with L or U; a forced PS1 measurement brighter than the limit
+     is used instead); 2 PS1 against the ZTF limit (L or U with D); -1 nothing (an X, or neither side D). The object's
+     catalog (`object_catalog`) is the kind its bands carry: at least two two-sided bands -> `in_both` (its one-sided
+     bands are dropped); else at least two one-sided bands all of one kind -> `in_ztf` / `in_pstarr`; anything else is
+     not comparable (-1, `catalog_reason`) and leaves here. Each survey's limit is the quadrant's magnitude at which
+     its recovery of the other survey's detections falls to LIMIT_COMPLETENESS (`completeness_limits`: the reference
+     is the other survey's detections passing their own quality and confident checks in >= 2 bands and the Gaia cuts,
+     the population the one-sided candidates come from; in PSF and in Kron magnitude, a band uses the kind it
+     compares), never deeper than the survey's nominal depth (ZTF's MAGLIM; `ps1_stack.stack_depth` of the stack's
+     nFrames at the position);
+  4. confident (`real_checks`, object-wide): outside every bright star's mask, the circle (`bright_star_radius`) and
+     the four diffraction-spike boxes (`spike_half_length`); optionally a ZTF sharpness (`ztf_sharpness`) within
+     `sharp_max` for point sources; for in_ztf and in_pstarr, optionally (`annotate_neighbours`) no other object of
+     either survey within `isolation_arcsec` nor inside a brighter object's Kron aperture (`neighbour_kron`): a
+     one-sided object that close to another is most often a piece of the same light; for in_both and in_pstarr, PS1's
+     own verdict on its detections: nStackDetections >= PS1_MIN_STACK_DETECTIONS and neither BAD_STACK nor
+     SUSPECT_STACK (for in_ztf the PS1 side is a limit and these only say the object is faint there);
+  5. population: no Gaia proper motion or parallax at 5 sigma;
+  6. calibrate, once, from what survives 4 and 5 in every catalog: the limits above and one KDE envelope per band from
+     the two-sided bands (`kde_envelopes`, optionally clipped of outliers first, `clip_envelope_sample`; fainter than
+     ENVELOPE_MONOTONE_FROM each +-1, 2, 3 sigma edge of a row is the most extreme value of that edge in it or any
+     brighter row, `widen_faint_rows`);
+  7. interesting: sigma of every compared band against the envelope (`annotate_sigma`; a limit band is clipped to the
+     direction its limit supports), |sigma| > SIGMA_BOUNDARY in at least two bands, at least two of them of the same
+     sign; optionally (`snr_keep`, off by default) each measured side of a kept band at that S/N, the rule re-checked.
+     Off, every candidate carries its per-band S/N and the website applies the threshold.
 
-A dropped band stays dropped, and an object leaves as soon as fewer than two bands remain.
+A dropped band stays dropped, and an object leaves as soon as fewer than two bands remain. Every object's record of
+what happened to it is `{b}_dropped_by` and `outcome` (`annotate_outcomes`; `explain` reads them back by position).
 
 Morphology is one decision per object: per band, the excess of PSF - Kron over PSF_KRON_CUT in units of each catalog's
 error, combined by inverse variance over the two catalogs; extended when that exceeds PSF_KRON_NSIGMA in >= 2 measured
@@ -62,11 +56,7 @@ bands. dmag = ZTF - PS1 uses PSF magnitudes for point sources and Kron magnitude
 galaxies: a PSF fit recovers only the part of a galaxy that looks like the PSF, C_psf/C_tot = 1 / (1 + (alpha_g /
 alpha_psf)^2 / 2) for Gaussian galaxy and PSF widths (Slater, Ivezic & Lupton 2020, AJ, arXiv:1912.08210, sec. III.3
 eq. 35), so the same galaxy is brighter in ZTF's ~2" PSF than in PS1's ~1.1" one; Kron apertures scale with the object,
-not the seeing. One KDE envelope per band is built from the two-sided bands that reach the |sigma| step, optionally clipped of
-outliers first (`clip_envelope_sample`), and every compared band is judged
-against it;
-fainter than ENVELOPE_MONOTONE_FROM each +-1, 2, 3 sigma edge of an envelope row is the most extreme value of that
-edge in it or any brighter row (`widen_faint_rows`).
+not the seeing.
 
 The optional cuts are a `Cuts` (defaults: the full pipeline; `NO_CUTS`: none of them), passed through `filter_field`,
 `filter_prepared`, `assign_catalogs`, `cut_bands` and `run_branch`. Everything is a function of a pandas frame; the
@@ -262,7 +252,7 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
 
     Object-level: `ra`, `dec` (the ZTF position for ZTF objects), `ps1_ra`, `ps1_dec` (the PS1 object's own position),
     `ztf_idx`, `ps1_idx` (-1 without one), `ps1_objid` (PS1's objID, -1 without a PS1 object), `ccd`, `qid`,
-    `ps1_qualityFlag`, `ps1_nStackDetections`,
+    `ps1_qualityFlag`, `ps1_nStackDetections`, `ps1_projcell`, `ps1_skycell` (and `{b}_ps1_projcell`, `{b}_ps1_skycell`: the skycell each band's row came from),
     `ps1_clear` (the PS1 position
     on valid ZTF pixels, NAN_RADIUS_PX from masked ones). Per band b: `{b}_ztf_det`, `{b}_ztf_psf/_err` (DAOPhot),
     `{b}_ztf_kron/_err` (our Kron), `{b}_ztf_kron_masked`, `{b}_ztf_kron_rap` (our Kron aperture radius, "), `{b}_ztf_snr`, `{b}_ztf_chi`, `{b}_ztf_sharp`, `{b}_ztf_flags`,
@@ -388,8 +378,8 @@ def ztf_checks(src: pd.DataFrame, b: str, point: np.ndarray) -> List[Tuple[str, 
 
 
 def ps1_checks(src: pd.DataFrame, b: str, cuts: Cuts = Cuts()) -> List[Tuple[str, np.ndarray]]:
-    """PS1's side of band b, (label, passes) in order; without a PS1 object only the skycell check applies (the PS1
-    limit stands in). First the band's row not from one of MAST's mis-registered polar skycells (`annotate_skycells`;
+    """PS1's side of band b, (label, passes) in order; without a PS1 object only the three coverage checks apply
+    (skycell, catalog, objects nearby) and the PS1 limit stands in. First the band's row not from one of MAST's mis-registered polar skycells (`annotate_skycells`;
     PS1 invalidated every magnitude there, and the detections and fluxes come from the same bad stacks, so a
     measurement from one is unusable and a missing PS1 object in one says nothing), and the position not in one of
     DR2's missing-catalog regions when there is no PS1 object (`annotate_skycells`), and, again without a PS1 object,
@@ -831,8 +821,9 @@ def gaia_table(src: pd.DataFrame, name: str, data_dir: Optional[str] = None, pad
 
 
 def annotate_gaia(src: pd.DataFrame, gaia: pd.DataFrame, max_arcsec: float = GAIA_MATCH_ARCSEC) -> pd.DataFrame:
-    """Nearest Gaia source within `max_arcsec`, positions propagated to GAIA_OBS_EPOCH: `gaia_pm_sig`,
-    `gaia_parallax_over_error` (NaN without a match or without that quantity), as the old pipeline's annotate_gaia."""
+    """Nearest Gaia source within `max_arcsec`, positions propagated to GAIA_OBS_EPOCH: `gaia_sep_arcsec`, `gaia_pm_sig`
+    (pm / (pmra_error + pmdec_error), the old pipeline's definition: the errors summed, not in quadrature) and
+    `gaia_parallax_over_error` (NaN without a match or without that quantity)."""
     coords = SkyCoord(gaia.ra.values * u.deg, gaia.dec.values * u.deg,
                       pm_ra_cosdec=np.nan_to_num(gaia.pmra.values) * u.mas / u.yr, pm_dec=np.nan_to_num(gaia.pmdec.values) * u.mas / u.yr,
                       obstime=Time(gaia.ref_epoch.values, format='jyear')).apply_space_motion(new_obstime=Time(GAIA_OBS_EPOCH, format='jyear'))
@@ -1270,9 +1261,8 @@ def annotate_outcomes(src: pd.DataFrame, waterfalls: Dict[str, 'Waterfall'], can
             n_alive = sum(alive[b].astype(int) for b in BANDS)
             died_at[(died_at < 0) & rows & (n_alive < 2)] = offset + i
         return died_at
-    all_rows = np.ones(n, bool)
     labels += waterfalls['all'].steps
-    died_shared = walk(waterfalls['all'], all_rows, 0)
+    walk(waterfalls['all'], np.ones(n, bool), 0)                       # per-band drops only: objects leave the shared stage as 'not comparable'
     died_branch = np.full(n, -1, np.int32)
     for name, wf in waterfalls.items():
         if name == 'all':
@@ -1285,9 +1275,8 @@ def annotate_outcomes(src: pd.DataFrame, waterfalls: Dict[str, 'Waterfall'], can
     for cand in candidates.values():
         is_cand[src.index.get_indexer(cand.index)] = True
     label_of = lambda idx: np.where(idx < 0, KEPT, np.array(labels + [KEPT], dtype=object)[np.where(idx < 0, len(labels), idx)])
-    died = np.where(died_branch >= 0, died_branch, died_shared)
     reason = np.char.add('not comparable: ', src.catalog_reason.astype(str).values.astype(str))
-    dropped = np.char.add('dropped: ', label_of(died).astype(str))
+    dropped = np.char.add('dropped: ', label_of(died_branch).astype(str))
     outcome = np.where(is_cand, 'candidate', np.where(src.catalog.values < 0, reason, dropped))
     cols = {f'{b}_dropped_by': pd.Categorical(label_of(first[b])) for b in BANDS}
     cols['outcome'] = pd.Categorical(outcome)

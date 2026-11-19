@@ -364,7 +364,7 @@ def ps1_field(field: int, quadrants: Iterable[Tuple[int, int]], data_dir: Option
 
 
 def match_ps1(obj: pd.DataFrame, ps1: pd.DataFrame, radius_arcsec: float = MATCH_ARCSEC) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """`ps1_idx` and `ps1_sep` on the objects (-1 / NaN without a match); `matched` and `ztf_idx` on the PS1 table."""
+    """`ps1_idx`, `ps1_sep` and `matched` on the objects (-1 / NaN / False without a match); `ztf_idx` and `matched` on the PS1 table."""
     j, sep = mutual_nearest(obj.ra, obj.dec, ps1.ra, ps1.dec, radius_arcsec)
     obj = obj.copy(); ps1 = ps1.copy()
     obj['ps1_idx'], obj['ps1_sep'] = j, sep
