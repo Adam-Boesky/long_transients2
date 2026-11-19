@@ -5,7 +5,7 @@ Every column of the field tables and the filter's object table, in pipeline orde
 **O** = ours (computed by this pipeline). `{b}` is a band, g/r/i. Dtypes are as saved in parquet.
 
 Files per field, under `Data/fields/<field>/`: `ztf_{b}.parquet`, `ztf_objects.parquet`, `ps1.parquet`
-(`Extracting/field_tables.py:build_field`), then `filter/objects.parquet` and `filter/<catalog>_candidates.parquet`
+and `matches.parquet` (`Extracting/field_tables.py:build_field`), then `filter/objects.parquet` and `filter/<catalog>_candidates.parquet`
 (`Source_Analysis/filter_field.py:filter_field`).
 
 ## 1. `ztf_{b}.parquet`: one row per DAOPhot source in band b
@@ -51,11 +51,10 @@ Tables built before commit 234ec43 also carry SExtractor `kron_auto`, `kron_auto
 | `ra`, `dec` | float64 | S/N-weighted mean position of the object's detections | `merge_bands` |
 | `{b}_idx` | int64 | row in `ztf_{b}.parquet`, -1 if not detected in b | `merge_bands` |
 | `{b}_sep` | float64 | separation of the b row from the object position, arcsec; NaN if absent | `merge_bands` |
-| `{b}_mag`, `{b}_magerr`, `{b}_snr`, `{b}_chi`, `{b}_sharp`, `{b}_flags`, `{b}_nan_dist_px`, `{b}_zkron`, `{b}_zkron_err`, `{b}_zkron_flag`, `{b}_zkron_masked` | float64 | copies of the band-table columns (`OBJECT_COLS`; flags become float with NaN) | `merge_bands` |
 | `{b}_covered` | bool | on a valid pixel of some quadrant's b reference image | `object_coverage` |
-| `ps1_idx` | int64 | row in `ps1.parquet` (mutual nearest within 1"), -1 if none | `match_ps1` |
-| `ps1_sep` | float64 | ZTF-PS1 separation, arcsec; NaN if unmatched | `match_ps1` |
-| `matched` | bool | `ps1_idx >= 0` | `match_ps1` |
+
+The photometry stays in the band tables; a table holds only its own data and the row indices of the tables it was made
+from, never anything about tables made from it.
 
 ## 3. `ps1.parquet`: one row per PS1 stack object inside some reference image
 
@@ -83,8 +82,14 @@ Ours:
 | `nan_dist_px` | float64 | distance to the nearest bad ZTF pixel in that quadrant, min over bands whose image contains it, px | `ps1_field` |
 | `{b}_covered` | bool | on a valid pixel of that quadrant's b image | `ps1_field` |
 | `on_ztf` | bool | `{b}_covered` in any band | `ps1_field` |
-| `ztf_idx` | int64 | row in `ztf_objects.parquet`, -1 if unmatched | `match_ps1` |
-| `matched` | bool | `ztf_idx >= 0` | `match_ps1` |
+
+## 3b. `matches.parquet`: one row per ZTF-PS1 match
+
+| column | dtype | meaning | computed by |
+|---|---|---|---|
+| `ztf_obj` | int64 | row in `ztf_objects.parquet` | `match_ps1` (mutual nearest within 1") |
+| `ps1` | int64 | row in `ps1.parquet` | `match_ps1` |
+| `sep_arcsec` | float64 | separation of the pair | `match_ps1` |
 
 ## 4. `filter/objects.parquet`: the object table
 

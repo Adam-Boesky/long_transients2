@@ -139,8 +139,8 @@ NO_CUTS = Cuts(bright_star_mask=False, sharp_max=None, sharp_point_only=False, p
 # ----------------------------------------------------------------------------------------------- loading
 
 BAND_COLS = ['ra', 'dec', 'ccd', 'qid', 'mag', 'magerr', 'snr', 'chi', 'sharp', 'flags', 'nan_dist_px', 'maglim', 'zkron', 'zkron_err', 'zkron_masked', 'zkron_rap']
-OBJ_COLS = ['ra', 'dec', 'ps1_idx'] + [f'{b}_{c}' for b in BANDS for c in ('idx', 'covered')]
-PS1_COLS = (['PanSTARR_ID', 'ra', 'dec', 'matched', 'ccd', 'qid', 'on_ztf', 'nan_dist_px', 'qualityFlag', 'nStackDetections',
+OBJ_COLS = ['ra', 'dec'] + [f'{b}_{c}' for b in BANDS for c in ('idx', 'covered')]
+PS1_COLS = (['PanSTARR_ID', 'ra', 'dec', 'ccd', 'qid', 'on_ztf', 'nan_dist_px', 'qualityFlag', 'nStackDetections',
              'projectionID', 'skyCellID']
             + [f'{b}_{c}' for b in BANDS for c in ('detected', 'projcell', 'skycell')]
             + [f'{b}{c}' for b in BANDS for c in ('PSFMag', 'PSFMagErr', 'KronMag', 'KronMagErr', 'PSFFlux', 'PSFFluxErr',
@@ -153,7 +153,7 @@ def load_field(field_id: int, data_dir: Optional[str] = None) -> Tuple[Dict[str,
     d = field_dir(field_id, data_dir)
     bands = {b: pd.read_parquet(os.path.join(d, f'ztf_{b}.parquet'), columns=BAND_COLS) for b in BANDS}
     return (bands, pd.read_parquet(os.path.join(d, 'ztf_objects.parquet'), columns=OBJ_COLS),
-            pd.read_parquet(os.path.join(d, 'ps1.parquet'), columns=PS1_COLS))
+            pd.read_parquet(os.path.join(d, 'ps1.parquet'), columns=PS1_COLS), pd.read_parquet(os.path.join(d, 'matches.parquet')))
 
 
 def _bits(values: np.ndarray, bit: int) -> np.ndarray:
@@ -247,7 +247,7 @@ def completeness_limit(mag: np.ndarray, recovered: np.ndarray, quad: np.ndarray,
     return out
 
 
-def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.DataFrame) -> pd.DataFrame:
+def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.DataFrame, matches: pd.DataFrame) -> pd.DataFrame:
     """One row per object: every ZTF object (with its PS1 match, if any) followed by every unmatched PS1 object.
 
     Object-level: `ra`, `dec` (the ZTF position for ZTF objects), `ps1_ra`, `ps1_dec` (the PS1 object's own position),
@@ -269,9 +269,11 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
     Every error and S/N here carries the ERR_FLOOR_MAG calibration floor (`floor_err`, `floor_flux_err`,
     `floor_snr`); the field tables keep the catalogs' own values.
     """
-    ps1_only = np.flatnonzero(~ps1.matched.values)
+    obj_ps1 = np.full(len(obj), -1); obj_ps1[matches.ztf_obj.values] = matches.ps1.values      # the match table, both ways
+    is_matched = np.zeros(len(ps1), bool); is_matched[matches.ps1.values] = True
+    ps1_only = np.flatnonzero(~is_matched)
     n_z, n_p = len(obj), len(ps1_only)
-    ps1_idx = np.concatenate([obj.ps1_idx.values, ps1_only])
+    ps1_idx = np.concatenate([obj_ps1, ps1_only])
     has_ps1 = ps1_idx >= 0
     pi = np.where(has_ps1, ps1_idx, 0)
     from_ps1 = lambda values, fill: np.where(has_ps1, values[pi], fill)
@@ -1231,8 +1233,8 @@ def prepare_field(field_id: int, data_dir: Optional[str] = None) -> pd.DataFrame
     (and whether that is one of MAST's bad polar skycells), and its distance to the nearest bright star and to its
     nearest other-survey neighbours."""
     data_dir = data_dir or get_data_path()
-    bands, obj, ps1 = load_field(field_id, data_dir)
-    base = object_table(bands, obj, ps1)
+    bands, obj, ps1, matches = load_field(field_id, data_dir)
+    base = object_table(bands, obj, ps1, matches)
     stars = bright_stars(field_id, data_dir, box=field_box(base))
     del bands, obj, ps1
     base = annotate_gaia(base, gaia_table(base, f'field{int(field_id):06d}', data_dir, field_id=field_id))

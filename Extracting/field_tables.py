@@ -8,8 +8,9 @@ Order, per field:
      linked into objects (no band order), each object at the S/N-weighted mean position of its detections;
   3. the PS1 stack catalog (`ps1_stack`: our mirror of MAST's stack table, cleaned to one row per object) for the
      partitions under the field, restricted to objects inside some reference image;
-  4. objects matched to PS1 by mutual nearest neighbour at MATCH_ARCSEC.
-Every step works on one homogeneous table; nothing downstream needs to know about quadrants.
+  4. objects matched to PS1 by mutual nearest neighbour at MATCH_ARCSEC, written as a match table of row indices.
+Every step works on one homogeneous table; nothing downstream needs to know about quadrants. A table holds only its
+own data and the row indices of the tables it was made from, never anything about tables made from it.
 """
 import argparse
 import glob
@@ -33,7 +34,6 @@ MATCH_ARCSEC = 1.0
 REF_SIZE_PX = 3200                 # reference-image side (Explanatory Supplement section 7.2)
 PSF_COLS = {'ra': 'ra', 'dec': 'dec', 'xpos': 'x', 'ypos': 'y', 'mag': 'mag', 'sigmag': 'magerr', 'snr': 'snr', 'chi': 'chi', 'sharp': 'sharp', 'flags': 'flags'}
 KRON_COLS = {'mag': 'zkron', 'magerr': 'zkron_err', 'r1': 'zkron_r1', 'r_ap': 'zkron_rap', 'sky_radius': 'zkron_sky', 'flag': 'zkron_flag', 'masked_frac': 'zkron_masked'}
-OBJECT_COLS = ('mag', 'magerr', 'snr', 'chi', 'sharp', 'flags', 'nan_dist_px', 'zkron', 'zkron_err', 'zkron_flag', 'zkron_masked')
 
 
 def field_dir(field: int, data_dir: Optional[str] = None) -> str:
@@ -204,8 +204,8 @@ def merge_bands(cats: Dict[str, pd.DataFrame], radius_arcsec: float = MATCH_ARCS
     and a component that holds two rows of one band (possible in a blend, through a third band) loses its longest edge
     until every object has at most one row per band. An object's position is the S/N-weighted mean of its detections
     (PS1's convention for its objects). Columns: ra, dec, and per band `{b}_idx` (row in the band
-    table, -1 if absent), `{b}_sep` (the row's separation from the object position, arcsec) and copies of the main
-    photometry columns."""
+    table, -1 if absent) and `{b}_sep` (the row's separation from the object position, arcsec); the photometry stays
+    in the band tables."""
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
     present = [b for b in BANDS if b in cats]
@@ -247,9 +247,6 @@ def merge_bands(cats: Dict[str, pd.DataFrame], radius_arcsec: float = MATCH_ARCS
         member = cats[b].iloc[np.clip(idx, 0, None)]
         sep = np.degrees(2 * np.arcsin(np.linalg.norm(_xyz(member.ra.values, member.dec.values) - _xyz(obj_ra, obj_dec), axis=1) / 2)) * 3600
         obj[f'{b}_sep'] = np.where(has, sep, np.nan)
-        for col in OBJECT_COLS:
-            if col in cats[b].columns:
-                obj[f'{b}_{col}'] = np.where(has, cats[b][col].values[np.clip(idx, 0, None)], np.nan)
     for b in BANDS:
         if b not in cats:
             obj[f'{b}_idx'], obj[f'{b}_sep'] = -1, np.nan
@@ -391,24 +388,21 @@ def ps1_field(field: int, quadrants: Iterable[Tuple[int, int]], data_dir: Option
     return cat[best >= 0].sort_values('PanSTARR_ID').reset_index(drop=True)
 
 
-def match_ps1(obj: pd.DataFrame, ps1: pd.DataFrame, radius_arcsec: float = MATCH_ARCSEC) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """`ps1_idx`, `ps1_sep` and `matched` on the objects (-1 / NaN / False without a match); `ztf_idx` and `matched` on the PS1 table."""
+def match_ps1(obj: pd.DataFrame, ps1: pd.DataFrame, radius_arcsec: float = MATCH_ARCSEC) -> pd.DataFrame:
+    """The ZTF-PS1 match as its own table, one row per matched pair: `ztf_obj` (row in the ZTF objects table), `ps1`
+    (row in the PS1 table), `sep_arcsec`. The two source tables are left as they are."""
     j, sep = mutual_nearest(obj.ra, obj.dec, ps1.ra, ps1.dec, radius_arcsec)
-    obj = obj.copy(); ps1 = ps1.copy()
-    obj['ps1_idx'], obj['ps1_sep'] = j, sep
-    obj['matched'] = j >= 0
-    ps1['ztf_idx'] = -1
-    ps1.loc[j[j >= 0], 'ztf_idx'] = np.flatnonzero(j >= 0)
-    ps1['matched'] = ps1['ztf_idx'] >= 0
-    return obj, ps1
+    k = np.flatnonzero(j >= 0)
+    return pd.DataFrame({'ztf_obj': k, 'ps1': j[k], 'sep_arcsec': sep[k]})
 
 
 # ----------------------------------------------------------------------------------------------- driver
 
 def build_field(field: int, quadrants: Sequence[Tuple[int, int]], data_dir: Optional[str] = None, overwrite: bool = False, n_jobs: int = 1,
                 require: Sequence[str] = ()):
-    """Steps 1 to 4 for one field. Writes ztf_<b>.parquet, ztf_objects.parquet and ps1.parquet under the field directory
-    and returns (bands, objects, ps1)."""
+    """Steps 1 to 4 for one field. Writes ztf_<b>.parquet, ztf_objects.parquet, ps1.parquet and matches.parquet under the
+    field directory and returns (bands, objects, ps1, matches). Each table holds only its own data plus the row indices
+    of the tables it was made from (`{b}_idx` on the objects, `ztf_obj` and `ps1` on the matches)."""
     out = field_dir(field, data_dir)
     os.makedirs(out, exist_ok=True)
     bands = {b: field_band(field, quadrants, b, data_dir, n_jobs=n_jobs, overwrite=overwrite, require=require) for b in BANDS}
@@ -417,10 +411,11 @@ def build_field(field: int, quadrants: Sequence[Tuple[int, int]], data_dir: Opti
     obj = merge_bands(bands)
     obj = object_coverage(obj, field, quadrants, data_dir, n_jobs=n_jobs)
     ps1 = ps1_field(field, quadrants, data_dir, n_jobs=n_jobs)
-    obj, ps1 = match_ps1(obj, ps1)
+    matches = match_ps1(obj, ps1)
     obj.to_parquet(os.path.join(out, 'ztf_objects.parquet'))
     ps1.to_parquet(os.path.join(out, 'ps1.parquet'))
-    return bands, obj, ps1
+    matches.to_parquet(os.path.join(out, 'matches.parquet'))
+    return bands, obj, ps1, matches
 
 
 if __name__ == '__main__':                                 # python -m Extracting.field_tables 860 --n-jobs 8
@@ -433,5 +428,5 @@ if __name__ == '__main__':                                 # python -m Extractin
     a = ap.parse_args()
     quads = field_quadrants(a.field, a.data_dir)
     print(f'field {a.field}: {len(quads)} quadrants', flush=True)
-    bands, obj, ps1 = build_field(a.field, quads, a.data_dir, overwrite=a.overwrite, n_jobs=a.n_jobs, require=a.require)
-    print(f'done: ' + ', '.join(f'{b} {len(c):,}' for b, c in bands.items()) + f'; objects {len(obj):,}; PS1 {len(ps1):,}; matched {int(obj.matched.sum()):,}', flush=True)
+    bands, obj, ps1, matches = build_field(a.field, quads, a.data_dir, overwrite=a.overwrite, n_jobs=a.n_jobs, require=a.require)
+    print(f'done: ' + ', '.join(f'{b} {len(c):,}' for b, c in bands.items()) + f'; objects {len(obj):,}; PS1 {len(ps1):,}; matched {len(matches):,}', flush=True)
