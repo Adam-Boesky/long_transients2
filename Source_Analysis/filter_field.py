@@ -29,8 +29,8 @@ unmatched PS1 object), and every band of it is judged in the same order, each st
      not comparable (-1, `catalog_reason`) and leaves here. Each survey's limit is the quadrant's magnitude at which
      its recovery of the other survey's detections falls to LIMIT_COMPLETENESS (`completeness_limits`: the reference
      is the other survey's detections passing their own quality and confident checks in >= 2 bands and the Gaia cuts,
-     the population the one-sided candidates come from; in PSF and in Kron magnitude, a band uses the kind it
-     compares), never deeper than the survey's nominal depth (ZTF's MAGLIM; `ps1_stack.stack_depth` of the stack's
+     the population the one-sided candidates come from; each reference binned by the magnitude it compares,
+     `reference_magnitude`), never deeper than the survey's nominal depth (ZTF's MAGLIM; `ps1_stack.stack_depth` of the stack's
      nFrames at the position);
   4. confident (`real_checks`, object-wide): optionally a ZTF sharpness (`ztf_sharpness`) within
      `sharp_max` for point sources; for in_ztf and in_pstarr, optionally (`annotate_neighbours`) no other object of
