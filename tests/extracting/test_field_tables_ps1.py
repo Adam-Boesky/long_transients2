@@ -56,9 +56,10 @@ def field(monkeypatch):
         'PanSTARR_ID': [1, 2, 3, 4, 5],
         'ra': [_sky(WCS_A, 10, 50)[0], ra_o, ra_t, 11.0, ra_c],       # A only, overlap near a mask in A, tie, outside both, clean overlap
         'dec': [_sky(WCS_A, 10, 50)[1], dec_o, dec_t, 0.0, dec_c],
+        **{f'{b}{c}': v for b in 'gri' for c, v in (('PSFFlux', 1.0), ('PSFFluxErr', 0.1), ('nFrames', 10))},
     })
     monkeypatch.setattr(ft.ps1_stack, 'objects', lambda ra, dec, directory=None: cat.copy())
-    return ft.ps1_field(0, [(1, 1), (1, 2)]).set_index('PanSTARR_ID')
+    return ft.ps1_field(0, [(1, 1), (1, 2)])[0].set_index('PanSTARR_ID')
 
 
 def test_objects_outside_every_image_are_dropped_and_the_rest_kept(field):
@@ -117,3 +118,14 @@ def test_merge_bands_splits_a_component_with_two_rows_of_one_band_at_its_longest
     assert len(o) == 2 and sorted(counts) == [1, 3]                           # the 0.8" g-i2 edge goes; i2 stands alone
     three = o[counts == 3].iloc[0]
     assert (three.g_idx, three.r_idx, three.i_idx) == (0, 0, 0)
+
+
+def test_ps1_neighbourhood_reports_coverage_and_the_median_frames_of_the_nearest_ps1_objects():
+    s = 1 / 3600
+    ps1 = pd.DataFrame({'ra': [10.0] * 5 + [12.0], 'dec': 20.0 + np.array([1, 2, 3, 4, 5, 0]) * s,
+                        **{f'{b}nFrames': [4, 6, 8, 10, 30, 2] for b in 'gri'},
+                        **{f'{b}PSFFlux': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0] for b in 'gri'}, **{f'{b}PSFFluxErr': [0.1] * 6 for b in 'gri'}})
+    ps1.loc[:4, 'gPSFFlux'] = np.nan                                           # nothing measured in g near (10, 20)
+    out = ft.ps1_neighbourhood(np.array([10.0, 50.0]), np.array([20.0, 0.0]), ps1)
+    assert out.r_ps1_nframes_local[0] == 8 and np.isnan(out.r_ps1_nframes_local[1])    # the far 2-frame object is no neighbour
+    assert out.r_ps1_covered[0] and not out.r_ps1_covered[1] and not out.g_ps1_covered[0]

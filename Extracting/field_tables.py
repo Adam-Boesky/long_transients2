@@ -7,7 +7,8 @@ Order, per field:
   2. the bands merged into objects: every band pair matched by mutual nearest neighbour at MATCH_ARCSEC, the pairs
      linked into objects (no band order), each object at the S/N-weighted mean position of its detections;
   3. the PS1 stack catalog (`ps1_stack`: our mirror of MAST's stack table, cleaned to one row per object) for the
-     partitions under the field, restricted to objects inside some reference image;
+     partitions under the field, restricted to objects inside some reference image; from the untrimmed partitions, PS1's
+     coverage and stack frames around every ZTF and PS1 object (`ps1_neighbourhood`);
   4. objects matched to PS1 by mutual nearest neighbour at MATCH_ARCSEC, written as a match table of row indices.
 Every step works on one homogeneous table; nothing downstream needs to know about quadrants. A table holds only its
 own data and the row indices of the tables it was made from, never anything about tables made from it.
@@ -15,6 +16,7 @@ own data and the row indices of the tables it was made from, never anything abou
 import argparse
 import glob
 import os
+import warnings
 from typing import Dict, Iterable, Optional, Sequence, Tuple
 
 import numpy as np
@@ -33,6 +35,8 @@ from .ztf_products import product_dir, refimg_path
 MATCH_ARCSEC = 1.0
 REF_SIZE_PX = 3200                 # reference-image side (Explanatory Supplement section 7.2)
 CLEAN_PX = 5                       # a position this far from a masked pixel counts as clean when choosing among covering images
+PS1_COVERAGE_ARCMIN = 1.0          # PS1's band-b stack reaches a position if it measured some object in b this close (the old pipeline's 1' rule)
+NFRAMES_NEIGHBOURS, NFRAMES_MAX_ARCSEC = 5, 60.0   # PS1 stack frames at a position: median nFrames of its nearest PS1 objects
 PSF_COLS = {'ra': 'ra', 'dec': 'dec', 'xpos': 'x', 'ypos': 'y', 'mag': 'mag', 'sigmag': 'magerr', 'snr': 'snr', 'chi': 'chi', 'sharp': 'sharp', 'flags': 'flags'}
 KRON_COLS = {'mag': 'zkron', 'magerr': 'zkron_err', 'r1': 'zkron_r1', 'r_ap': 'zkron_rap', 'sky_radius': 'zkron_sky', 'flag': 'zkron_flag', 'masked_frac': 'zkron_masked'}
 
@@ -372,17 +376,49 @@ def _quadrant_sky_grid(field: int, ccd: int, qid: int, data_dir: Optional[str], 
     return np.asarray(ra), np.asarray(dec)
 
 
+def ps1_neighbourhood(ra: np.ndarray, dec: np.ndarray, ps1: pd.DataFrame) -> pd.DataFrame:
+    """What PS1's catalog says about its own coverage at each position, per band: `{b}_ps1_covered` (some PS1 object
+    measured in b within PS1_COVERAGE_ARCMIN: the band's stack reaches the position) and `{b}_ps1_nframes_local` (the
+    median `{b}nFrames` of the NFRAMES_NEIGHBOURS nearest PS1 objects with at least one frame, within
+    NFRAMES_MAX_ARCSEC; NaN without any). `ps1` should be the untrimmed partition catalog, so positions near a field's
+    edge see their neighbours outside it."""
+    pos = _xyz(ra, dec)
+    out = {}
+    for b in BANDS:
+        flux, err, frames = ps1[f'{b}PSFFlux'].values, ps1[f'{b}PSFFluxErr'].values, ps1[f'{b}nFrames'].values
+        meas = np.isfinite(flux) & (err > 0)
+        p = _xyz(ps1.ra.values, ps1.dec.values)
+        out[f'{b}_ps1_covered'] = (np.isfinite(cKDTree(p[meas]).query(pos, k=1, distance_upper_bound=_chord(PS1_COVERAGE_ARCMIN * 60))[0])
+                                   if meas.any() else np.zeros(len(pos), bool))
+        ok = frames >= 1
+        local = np.full(len(pos), np.nan)
+        if ok.any():
+            k = min(NFRAMES_NEIGHBOURS, int(ok.sum()))
+            d, i = cKDTree(p[ok]).query(pos, k=k, distance_upper_bound=_chord(NFRAMES_MAX_ARCSEC))
+            d, i = d.reshape(len(pos), -1), i.reshape(len(pos), -1)
+            vals = np.where(np.isfinite(d), frames[ok][np.clip(i, 0, ok.sum() - 1)], np.nan)
+            with warnings.catch_warnings():                                     # a position with no neighbour is an all-NaN row
+                warnings.simplefilter('ignore', RuntimeWarning)
+                local = np.nanmedian(vals, axis=1)
+        out[f'{b}_ps1_nframes_local'] = local.astype(np.float32)
+    return pd.DataFrame(out)
+
+
 def ps1_field(field: int, quadrants: Iterable[Tuple[int, int]], data_dir: Optional[str] = None,
-              stack: Optional[str] = None, n_jobs: int = 1) -> pd.DataFrame:
+              stack: Optional[str] = None, n_jobs: int = 1) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """The field's PS1 objects: the cleaned stack catalog of every partition under its reference images
     (`ps1_stack.objects`), restricted to objects inside some image, with `ztf_coverage` at their positions (what ZTF
-    has there, per band). Objects on masked pixels (saturated stars) stay, so they can still serve as counterparts."""
+    has there, per band) and `{b}_nframes_local` (`ps1_neighbourhood`; their own `{b}nFrames` where they have one).
+    Objects on masked pixels (saturated stars) stay, so they can still serve as counterparts. Returns (the field's
+    objects, the untrimmed partition catalog, for the neighbourhood of the ZTF objects)."""
     quadrants = list(quadrants)
     grid = [_quadrant_sky_grid(field, ccd, qid, data_dir) for ccd, qid in quadrants]
-    cat = ps1_stack.objects(np.concatenate([g[0] for g in grid]), np.concatenate([g[1] for g in grid]), stack)
-    cov = ztf_coverage(cat.ra.to_numpy(), cat.dec.to_numpy(), field, quadrants, data_dir, n_jobs)
-    cat = pd.concat([cat.reset_index(drop=True), cov.drop(columns='on_image')], axis=1)
-    return cat[cov.on_image.values].sort_values('PanSTARR_ID').reset_index(drop=True)
+    full = ps1_stack.objects(np.concatenate([g[0] for g in grid]), np.concatenate([g[1] for g in grid]), stack).reset_index(drop=True)
+    cov = ztf_coverage(full.ra.to_numpy(), full.dec.to_numpy(), field, quadrants, data_dir, n_jobs)
+    near = ps1_neighbourhood(full.ra.to_numpy(), full.dec.to_numpy(), full)
+    near = near[[f'{b}_ps1_nframes_local' for b in BANDS]].rename(columns=lambda c: c.replace('_ps1_', '_'))
+    cat = pd.concat([full, cov.drop(columns='on_image'), near], axis=1)
+    return cat[cov.on_image.values].sort_values('PanSTARR_ID').reset_index(drop=True), full
 
 
 def match_ps1(obj: pd.DataFrame, ps1: pd.DataFrame, radius_arcsec: float = MATCH_ARCSEC) -> pd.DataFrame:
@@ -407,7 +443,8 @@ def build_field(field: int, quadrants: Sequence[Tuple[int, int]], data_dir: Opti
         cat.to_parquet(os.path.join(out, f'ztf_{b}.parquet'))
     obj = merge_bands(bands)
     obj = object_coverage(obj, field, quadrants, data_dir, n_jobs=n_jobs)
-    ps1 = ps1_field(field, quadrants, data_dir, n_jobs=n_jobs)
+    ps1, ps1_full = ps1_field(field, quadrants, data_dir, n_jobs=n_jobs)
+    obj = pd.concat([obj, ps1_neighbourhood(obj.ra.values, obj.dec.values, ps1_full)], axis=1)   # what PS1 has at each ZTF object
     matches = match_ps1(obj, ps1)
     obj.to_parquet(os.path.join(out, 'ztf_objects.parquet'))
     ps1.to_parquet(os.path.join(out, 'ps1.parquet'))

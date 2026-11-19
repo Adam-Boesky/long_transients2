@@ -11,7 +11,7 @@ unmatched PS1 object), and every band of it is judged in the same order, each st
      Kron aperture at most KRON_MAX_MASKED masked. PS1 (`ps1_checks`): not one of MAST's mis-registered polar
      skycells (`ps1_skycells`; with or without a PS1 object); without a PS1 object, the DR2 catalog covering the
      position (MAST's missing-data boxes, its Dec -30 cut) and some PS1 object measured in the band within
-     PS1_COVERAGE_ARCMIN (its stack reaches the position); with one, per band: at least `ps1_min_nframes` stack input
+     1' (its stack reaches the position; `field_tables.ps1_neighbourhood`); with one, per band: at least `ps1_min_nframes` stack input
      frames (PS1 runs its mixture-model outlier rejection only with more than 6 inputs, Waters et al. 2020), residual
      sky at most `ps1_sky_max`, none of the DEFECT / PEAK_ON_SPIKE / ON_SPIKE / ON_STARCORE / ON_BURNTOOL / SATSTAR /
      SATSTAR_PROFILE flags (PS1_BAND_FLAGS), a measurement in the band (forced photometry counts) and psfQfPerfect >
@@ -105,7 +105,6 @@ PS1_MIN_STACK_DETECTIONS = 2    # where PS1's side is a measurement (in_both, in
 BRIGHT_STAR_G_MAX = 16.0        # Gaia stars brighter than this get a mask circle and spike boxes
 SELF_ARCSEC = 1.0               # a mask star this close to an object is the object itself
 KRON_REACH_ARCSEC = 40.0        # Kron containment is searched out to this radius; real apertures reach ~30"
-PS1_COVERAGE_ARCMIN = 1.0       # PS1 covers a position in a band if it measured some object in that band this close (the old pipeline's 1' rule)
 SPIKE_PA = (0.0, 90.0, 30.0, 150.0)   # ZTF diffraction spikes: position angles (deg, N through E) of the four boxes
 SPIKE_WIDTH_ARCSEC = 12.0       # full width of a spike box
 SPIKE_GROWTH, SPIKE_ANCHOR_G = 1.15, 16.0   # spike half-length = R * SPIKE_GROWTH ** (SPIKE_ANCHOR_G - G): R at G = 16, ~4 R at G = 6
@@ -140,12 +139,12 @@ NO_CUTS = Cuts(bright_star_mask=False, sharp_max=None, sharp_point_only=False, p
 # ----------------------------------------------------------------------------------------------- loading
 
 BAND_COLS = ['ra', 'dec', 'ccd', 'qid', 'mag', 'magerr', 'snr', 'chi', 'sharp', 'flags', 'nan_dist_px', 'maglim', 'zkron', 'zkron_err', 'zkron_masked', 'zkron_rap']
-OBJ_COLS = ['ra', 'dec'] + [f'{b}_{c}' for b in BANDS for c in ('idx', 'covered', 'ccd', 'qid', 'nan_dist_px', 'maglim')]
+OBJ_COLS = ['ra', 'dec'] + [f'{b}_{c}' for b in BANDS for c in ('idx', 'covered', 'ccd', 'qid', 'nan_dist_px', 'maglim', 'ps1_covered', 'ps1_nframes_local')]
 PS1_COLS = (['PanSTARR_ID', 'ra', 'dec', 'qualityFlag', 'nStackDetections']
             + [f'{b}_{c}' for b in BANDS for c in ('detected', 'projcell', 'skycell')]
             + [f'{b}{c}' for b in BANDS for c in ('PSFMag', 'PSFMagErr', 'KronMag', 'KronMagErr', 'PSFFlux', 'PSFFluxErr',
                                                   'infoFlag', 'infoFlag2', 'psfQfPerfect', 'sky', 'nFrames', 'KronRad')]
-            + [f'{b}_{c}' for b in BANDS for c in ('covered', 'ccd', 'qid', 'nan_dist_px', 'maglim')])
+            + [f'{b}_{c}' for b in BANDS for c in ('covered', 'ccd', 'qid', 'nan_dist_px', 'maglim', 'nframes_local')])
 
 
 def load_field(field_id: int, data_dir: Optional[str] = None) -> Tuple[Dict[str, pd.DataFrame], pd.DataFrame, pd.DataFrame]:
@@ -193,23 +192,6 @@ def floor_flux_err(flux: np.ndarray, flux_err: np.ndarray) -> np.ndarray:
 def floor_snr(snr: np.ndarray) -> np.ndarray:
     """S/N once the floor is in the error: 1 / sqrt(1/snr^2 + floor_frac^2), capped near 1.0857 / ERR_FLOOR_MAG."""
     return snr / np.sqrt(1.0 + (snr * ERR_FLOOR_MAG / 1.0857) ** 2)
-
-
-NFRAMES_NEIGHBOURS, NFRAMES_MAX_ARCSEC = 5, 60.0   # where there is no PS1 object: median nFrames of its nearest PS1 objects
-
-
-def nframes_at(ps1: pd.DataFrame, b: str, ra: np.ndarray, dec: np.ndarray, k: int = NFRAMES_NEIGHBOURS,
-               max_arcsec: float = NFRAMES_MAX_ARCSEC) -> np.ndarray:
-    """PS1 stack frames in band b at positions without a PS1 object: the median `{b}nFrames` of the k nearest PS1
-    objects within max_arcsec (coverage changes on small scales, e.g. at chip gaps); NaN without any."""
-    ok = ps1[f'{b}nFrames'].values >= 1
-    cosd = np.cos(np.radians(np.median(ps1.dec.values)))
-    tree = cKDTree(np.c_[ps1.ra.values[ok] * cosd, ps1.dec.values[ok]])
-    dist, idx = tree.query(np.c_[np.asarray(ra) * cosd, np.asarray(dec)], k=k, distance_upper_bound=max_arcsec / 3600)
-    vals = np.where(np.isfinite(dist), ps1[f'{b}nFrames'].values[ok][np.clip(idx, 0, ok.sum() - 1)], np.nan)
-    with warnings.catch_warnings():                       # a position with no neighbour is an all-NaN row
-        warnings.simplefilter('ignore', RuntimeWarning)
-        return np.nanmedian(vals, axis=1) if len(vals) else np.array([])
 
 
 def ps1_nframes(src: pd.DataFrame, b: str) -> np.ndarray:
@@ -275,8 +257,9 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
     `{b}_ps1_flux/_err`, `{b}_ps1_kron_rad` (PS1's Kron aperture radius, "), `{b}_ps1_snr` (flux / error), `{b}_ps1_meas` (a flux with a positive error, forced included),
     `{b}_ps1_infoFlag`, `{b}_ps1_infoFlag2` (0 without a PS1 object), `{b}_ps1_psfQfPerfect`, `{b}_ps1_sky` (residual
     sky, Jy/arcsec^2), `{b}_ps1_nFrames` (the object's own stack input frames, NaN without a PS1 object),
-    `{b}_ps1_nframes_local` (the median nFrames of the nearest PS1 objects, `nframes_at`; the stack depth where the
-    object has none of its own, see `ps1_depth`).
+    `{b}_ps1_nframes_local` (the median nFrames of the nearest PS1 objects; the stack depth where the object has none of
+    its own, see `ps1_depth`) and `{b}_ps1_covered` (a PS1 object measured in b within 1': its stack reaches the
+    position), both from the untrimmed PS1 partitions at build time (`field_tables.ps1_neighbourhood`).
     `completeness_limits` adds the limits `{b}_ztf_limit` / `{b}_ps1_limit`.
 
     Every error and S/N here carries the ERR_FLOOR_MAG calibration floor (`floor_err`, `floor_flux_err`,
@@ -336,7 +319,8 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
         cols[f'{b}_ps1_meas'] = np.isfinite(flux) & (err > 0)
         cols[f'{b}_ps1_snr'] = np.where(cols[f'{b}_ps1_meas'], flux / np.where(err > 0, err, 1.0), np.nan)
         cols[f'{b}_ps1_nFrames'] = from_ps1(ps1[f'{b}nFrames'].values.astype(float), np.nan).astype(np.float32)
-        cols[f'{b}_ps1_nframes_local'] = nframes_at(ps1, b, cols['ra'], cols['dec']).astype(np.float32)
+        cols[f'{b}_ps1_nframes_local'] = np.concatenate([obj[f'{b}_ps1_nframes_local'].values, ps1[f'{b}_nframes_local'].values[ps1_only]]).astype(np.float32)
+        cols[f'{b}_ps1_covered'] = np.concatenate([obj[f'{b}_ps1_covered'].values, np.ones(n_p, bool)])   # a PS1 object: PS1 reaches it
     return pd.DataFrame(cols, copy=False)
 
 # ----------------------------------------------------------------------------------------------- morphology
@@ -384,7 +368,7 @@ def ps1_checks(src: pd.DataFrame, b: str, cuts: Cuts = Cuts()) -> List[Tuple[str
     measurement from one is unusable and a missing PS1 object in one says nothing), and the position not in one of
     DR2's missing-catalog regions when there is no PS1 object (`annotate_skycells`), and, again without a PS1 object,
     the band's stack reaching the position (`{b}_ps1_covered`: a PS1 object measured in the band within
-    PS1_COVERAGE_ARCMIN; otherwise its limit cannot stand in). With `cuts.ps1_sky_max`, then a
+    1', `field_tables.ps1_neighbourhood`; otherwise its limit cannot stand in). With `cuts.ps1_sky_max`, then a
     residual sky at most that (a band without a sky value passes); with
     `cuts.ps1_min_nframes`, then a stack of at least that many input frames (nFrames 0, i.e. no stack input, fails)."""
     none = src.ps1_idx.values < 0
@@ -395,7 +379,7 @@ def ps1_checks(src: pd.DataFrame, b: str, cuts: Cuts = Cuts()) -> List[Tuple[str
               if min_nframes is not None else [])
     stack = [('PS1: not in a flagged polar skycell', ~ps1_skycell_bad(src, b)),
              ('PS1: catalog covers the position', ~src.ps1_catalog_missing.values),
-             (f"PS1: objects within {PS1_COVERAGE_ARCMIN:g}' in the band", (~none) | src[f'{b}_ps1_covered'].values)]
+             ("PS1: objects within 1' in the band", (~none) | src[f'{b}_ps1_covered'].values)]
     return (stack + sky + frames + [(label, none | ~_bits(src[f'{b}_ps1_{col}'].values, bit)) for label, col, bit in PS1_BAND_FLAGS]
             + [('PS1: measured in the band', none | src[f'{b}_ps1_meas'].values),
                (f'PS1: psfQfPerfect > {PSF_QF_MIN}', none | (src[f'{b}_ps1_psfQfPerfect'].values > PSF_QF_MIN))])
@@ -1208,10 +1192,7 @@ def annotate_neighbours(src: pd.DataFrame) -> pd.DataFrame:
 
       `nearest_other_arcsec`   distance to the nearest other object (NaN beyond 60");
       `inside_brighter_kron`   inside the Kron aperture of a brighter object (PS1's KronRad, or our ZTF aperture): the
-                               light there belongs to that object (a galaxy's outskirts);
-      `{b}_ps1_covered`        PS1 measured some object in band b within PS1_COVERAGE_ARCMIN: its stack reaches the
-                               position in that band (the catalog is all we have of PS1's footprint; a stack edge or
-                               hole wider than that radius shows as no objects at all).
+                               light there belongs to that object (a galaxy's outskirts).
 
     An object's magnitude is its brightest PSF magnitude in any band of either survey; a Kron radius is the largest
     finite one over the bands."""
@@ -1242,15 +1223,8 @@ def annotate_neighbours(src: pd.DataFrame) -> pd.DataFrame:
     i = np.fromiter((j for h in hits for j in h), int, int(n_hits.sum()))               # the object inside it
     inside = (owner[e] != i) & (e_mag[e] < own_mag[i])
     in_kron[i[inside]] = True
-    # PS1 coverage per band, from the catalog alone: a PS1 object measured in the band within PS1_COVERAGE_ARCMIN
-    ps1_pos = np.c_[src.ps1_ra.values[ps1_rows] * cosd, src.ps1_dec.values[ps1_rows]]
-    covered = {}
-    for b in BANDS:
-        meas = src[f'{b}_ps1_meas'].values[ps1_rows]
-        d = cKDTree(ps1_pos[meas]).query(pos, k=1, distance_upper_bound=PS1_COVERAGE_ARCMIN / 60)[0] if meas.any() else np.full(len(src), np.inf)
-        covered[f'{b}_ps1_covered'] = np.isfinite(d)
     return _attach(src, {'nearest_other_arcsec': np.where(np.isfinite(nearest), nearest * 3600, np.nan).astype(np.float32),
-                         'inside_brighter_kron': in_kron, **covered})
+                         'inside_brighter_kron': in_kron})
 
 
 def field_box(src: pd.DataFrame, pad_deg: float = 0.4) -> Tuple[float, float, float, float]:

@@ -243,13 +243,6 @@ def test_the_ps1_sky_cut_is_off_by_default_and_marks_a_high_sky_ps1_band_untrust
     assert 'PS1: residual sky <= 1e-07' in wf.steps
 
 
-def test_nframes_for_a_position_without_a_ps1_object_is_the_median_of_its_neighbours():
-    ps1 = pd.DataFrame({'ra': [10.0, 10.0, 10.0, 10.0, 10.0, 12.0], 'dec': 20.0 + np.array([1, 2, 3, 4, 5, 0]) / 3600,
-                        'gnFrames': [4, 6, 8, 10, 30, 2]})
-    n = ff.nframes_at(ps1, 'g', np.array([10.0, 50.0]), np.array([20.0, 0.0]), k=5, max_arcsec=60)
-    assert n[0] == 8 and np.isnan(n[1])                                # the far-away 2-frame object is not a neighbour
-
-
 def test_the_nframes_cut_is_off_by_default_and_marks_a_few_frame_ps1_band_untrustworthy():
     rows = pd.DataFrame([{**object_row('DDD', 'DDD'), 'g_ps1_nFrames': 3.0, 'r_ps1_nFrames': 0.0}], index=['few frames'])
     assert tuple(ff.assign_catalogs(rows, OFF).loc['few frames', [f'{b}_cat' for b in BANDS]]) == (0, 0, 0)

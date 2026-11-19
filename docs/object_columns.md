@@ -55,6 +55,8 @@ Tables built before commit 234ec43 also carry SExtractor `kron_auto`, `kron_auto
 | `{b}_ccd`, `{b}_qid` | int16 / int8 | the covering b image chosen for the position: on valid pixels, then ≥ 5 px (`CLEAN_PX`) from a mask, then the deepest `MAGLIM`; -1 if none covers it | `ztf_coverage` |
 | `{b}_nan_dist_px` | float32 | distance to the nearest masked pixel in that image, px; 0 if none covers it | `ztf_coverage` |
 | `{b}_maglim` | float32 | that image's `MAGLIM`; NaN if none covers it | `ztf_coverage` |
+| `{b}_ps1_covered` | bool | some PS1 object measured in b within 1' (untrimmed partitions): PS1's b stack reaches the position | `ps1_neighbourhood` |
+| `{b}_ps1_nframes_local` | float32 | median nFrames of the 5 nearest PS1 objects within 60" | `ps1_neighbourhood` |
 
 The photometry stays in the band tables; a table holds only its own data and the row indices of the tables it was made
 from, never anything about tables made from it.
@@ -82,6 +84,7 @@ Ours:
 | `n_primary_rows` | int64 | of those, rows with STACK_PRIMARY in any band | `ps1_stack.clean` |
 | `{b}_detected` | bool | not forced (`{b}infoFlag2 & 4` == 0), PSFFluxErr > 0, PSFFlux finite | `ps1_stack.clean` |
 | `{b}_covered`, `{b}_ccd`, `{b}_qid`, `{b}_nan_dist_px`, `{b}_maglim` | as in `ztf_objects` | what ZTF has at the PS1 position, per band, from the covering image chosen the same way | `ztf_coverage` (via `ps1_field`) |
+| `{b}_nframes_local` | float32 | median nFrames of the 5 nearest other PS1 objects within 60" (untrimmed partitions); used where the object has no b row | `ps1_neighbourhood` (via `ps1_field`) |
 
 ## 3b. `matches.parquet`: one row per ZTF-PS1 match
 
@@ -144,7 +147,7 @@ Per band, PS1 side (from the PS1 object; NaN / 0 / -1 without one):
 | `{b}_ps1_projcell`, `{b}_ps1_skycell` | int32 / int16 | N | `{b}_projcell`, `{b}_skycell` (-1 without) |
 | `{b}_ps1_meas` | bool | O | finite flux with error > 0 (forced included) |
 | `{b}_ps1_snr` | float32 | O | `flux / flux_err` (floored) where `_meas` |
-| `{b}_ps1_nframes_local` | float32 | O | median nFrames of the 5 nearest PS1 objects within 60" (`nframes_at`); the stack depth used where the object has no nFrames of its own (`ps1_nframes`, `ps1_depth`) |
+| `{b}_ps1_nframes_local` | float32 | O | median nFrames of the 5 nearest PS1 objects within 60", from the untrimmed PS1 partitions at build time (`field_tables.ps1_neighbourhood`); the depth used where the object has no nFrames of its own (`ps1_nframes`, `ps1_depth`) |
 
 ### 4b. Gaia (`annotate_gaia`, Gaia DR3 propagated to J2021.0, nearest within 5")
 
@@ -175,7 +178,7 @@ Per band, PS1 side (from the PS1 object; NaN / 0 / -1 without one):
 |---|---|---|
 | `nearest_other_arcsec` | float32 | distance to the nearest other ZTF or PS1 entry (not the object's own), arcsec; NaN beyond 60" |
 | `inside_brighter_kron` | bool | inside the Kron aperture (ZTF `kron_rap` or PS1 `KronRad`, capped at 40") of a brighter object |
-| `{b}_ps1_covered` | bool | some PS1 object with `{b}_ps1_meas` within 1' (PS1's b stack reaches the position) |
+| `{b}_ps1_covered` | bool | some PS1 object measured in b within 1', from the untrimmed partitions at build time (`ps1_neighbourhood`): PS1's b stack reaches the position |
 
 ### 4f. Completeness limits (`completeness_limits`, called from `assign_catalogs`)
 
