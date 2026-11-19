@@ -212,6 +212,18 @@ def nframes_at(ps1: pd.DataFrame, b: str, ra: np.ndarray, dec: np.ndarray, k: in
         return np.nanmedian(vals, axis=1) if len(vals) else np.array([])
 
 
+def ps1_nframes(src: pd.DataFrame, b: str) -> np.ndarray:
+    """PS1 stack input frames at each object in band b: its own `{b}_ps1_nFrames` where it has at least one, else the
+    local estimate `{b}_ps1_nframes_local`."""
+    own = src[f'{b}_ps1_nFrames'].values
+    return np.where(own >= 1, own, src[f'{b}_ps1_nframes_local'].values)
+
+
+def ps1_depth(src: pd.DataFrame, b: str) -> np.ndarray:
+    """PS1's nominal depth at each object in band b (`ps1_stack.stack_depth` of `ps1_nframes`): a cap on its limit."""
+    return ps1_stack.stack_depth(ps1_nframes(src, b), b)
+
+
 def completeness_limit(mag: np.ndarray, recovered: np.ndarray, quad: np.ndarray, cap: Dict[Tuple[int, int], float],
                        completeness: float = LIMIT_COMPLETENESS, step: float = LIMIT_BIN, min_per_bin: int = 20,
                        min_per_quad: int = 200) -> Dict[Tuple[int, int], float]:
@@ -253,7 +265,7 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
     Object-level: `ra`, `dec` (the ZTF position for ZTF objects), `ps1_ra`, `ps1_dec` (the PS1 object's own position),
     `ztf_idx`, `ps1_idx` (-1 without one), `ps1_objid` (PS1's objID, -1 without a PS1 object), `ps1_qualityFlag`,
     `ps1_nStackDetections`, `{b}_ps1_projcell`, `{b}_ps1_skycell` (the skycell each band's PS1 row came from; -1 without
-    a PS1 object), `ccd`, `qid` (the r-band quadrant, else g, else i: a label for cutouts). Per band b: the ZTF
+    a PS1 object). Per band b: the ZTF
     image the band is judged in, `{b}_ccd`, `{b}_qid` (the detection's own image; for a band without a detection the
     covering image `field_tables.ztf_coverage` chose: on valid pixels, clean, deepest), with `{b}_ztf_covered`,
     `{b}_ztf_nan_dist` (distance to its nearest masked pixel) and `{b}_ztf_maglim` (its nominal depth); `{b}_ztf_det`,
@@ -263,8 +275,8 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
     `{b}_ps1_flux/_err`, `{b}_ps1_kron_rad` (PS1's Kron aperture radius, "), `{b}_ps1_snr` (flux / error), `{b}_ps1_meas` (a flux with a positive error, forced included),
     `{b}_ps1_infoFlag`, `{b}_ps1_infoFlag2` (0 without a PS1 object), `{b}_ps1_psfQfPerfect`, `{b}_ps1_sky` (residual
     sky, Jy/arcsec^2), `{b}_ps1_nFrames` (the object's own stack input frames, NaN without a PS1 object),
-    `{b}_ps1_limit_nframes` (its own if at least one, else `nframes_at`) and `{b}_ps1_depth` (its `ps1_stack.stack_depth`,
-    the nominal PS1 depth).
+    `{b}_ps1_nframes_local` (the median nFrames of the nearest PS1 objects, `nframes_at`; the stack depth where the
+    object has none of its own, see `ps1_depth`).
     `completeness_limits` adds the limits `{b}_ztf_limit` / `{b}_ps1_limit`.
 
     Every error and S/N here carries the ERR_FLOOR_MAG calibration floor (`floor_err`, `floor_flux_err`,
@@ -323,18 +335,8 @@ def object_table(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
         flux, err = cols[f'{b}_ps1_flux'], cols[f'{b}_ps1_flux_err']
         cols[f'{b}_ps1_meas'] = np.isfinite(flux) & (err > 0)
         cols[f'{b}_ps1_snr'] = np.where(cols[f'{b}_ps1_meas'], flux / np.where(err > 0, err, 1.0), np.nan)
-        own = from_ps1(ps1[f'{b}nFrames'].values.astype(float), np.nan)
-        cols[f'{b}_ps1_nFrames'] = own.astype(np.float32)
-        at = own.copy()
-        missing = ~(own >= 1)
-        at[missing] = nframes_at(ps1, b, cols['ra'][missing], cols['dec'][missing])
-        cols[f'{b}_ps1_limit_nframes'] = at.astype(np.float32)
-        cols[f'{b}_ps1_depth'] = ps1_stack.stack_depth(at, b).astype(np.float32)   # the nominal depth, a cap on the limit
-    ccd, qid = cols['r_ccd'].copy(), cols['r_qid'].copy()                           # the object's label quadrant: r, else g, else i
-    for b in ('g', 'i'):
-        fill = ccd < 0
-        ccd[fill], qid[fill] = cols[f'{b}_ccd'][fill], cols[f'{b}_qid'][fill]
-    cols['ccd'], cols['qid'] = ccd, qid
+        cols[f'{b}_ps1_nFrames'] = from_ps1(ps1[f'{b}nFrames'].values.astype(float), np.nan).astype(np.float32)
+        cols[f'{b}_ps1_nframes_local'] = nframes_at(ps1, b, cols['ra'], cols['dec']).astype(np.float32)
     return pd.DataFrame(cols, copy=False)
 
 # ----------------------------------------------------------------------------------------------- morphology
@@ -484,7 +486,7 @@ def completeness_limits(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
     the recovering survey would remove recovered objects only and are left out. Recovery is a measurement of the band
     by the other survey at the 1" match, i.e. what the pipeline would use in place of the limit: a ZTF DAOPhot
     detection at any S/N, a PS1 detection or forced flux > 0 (a PS1 magnitude). Caps: ZTF's MAGLIM per quadrant,
-    PS1's published stack depth per quadrant and `{b}_ps1_depth` per object."""
+    PS1's published stack depth per quadrant and `ps1_depth` per object."""
     z_refs, p_refs = completeness_references(src, cuts)
     point = point_source(src)
     cols = {}
@@ -501,7 +503,7 @@ def completeness_limits(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
             for (c, q), v in completeness_limit(np.where(ref, mag, np.nan), rec, key, cap).items():
                 lut[c * 10 + q] = v
             lim = np.where(has, lut[key], np.nan)
-            cols[f'{b}_{survey}_limit'] = (np.fmin(lim, src[f'{b}_ps1_depth'].values) if survey == 'ps1' else lim).astype(np.float32)
+            cols[f'{b}_{survey}_limit'] = (np.fmin(lim, ps1_depth(src, b)) if survey == 'ps1' else lim).astype(np.float32)
     return _attach(src, cols)
 
 

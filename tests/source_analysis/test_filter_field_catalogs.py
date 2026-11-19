@@ -35,7 +35,7 @@ def object_row(ztf: str, ps1: str, n_stack_detections: int = 3) -> dict:
                   f'{b}_ztf_kron_err': np.nan, f'{b}_ztf_kron_rap': np.nan, f'{b}_ps1_kron_rad': np.nan, f'{b}_ztf_maglim': 21.0,
                   f'{b}_ps1_flux': flux, f'{b}_ps1_flux_err': err, f'{b}_ps1_meas': meas,
                   f'{b}_ps1_snr': flux / err if meas else np.nan, f'{b}_ps1_infoFlag': flag, f'{b}_ps1_infoFlag2': flag2,
-                  f'{b}_ps1_psfQfPerfect': qf, f'{b}_ps1_sky': 0.0, f'{b}_ps1_depth': 23.0, f'{b}_ps1_detected': bool(meas and flux > 0 and flux / err >= 5), f'{b}_ps1_nFrames': 10.0,
+                  f'{b}_ps1_psfQfPerfect': qf, f'{b}_ps1_sky': 0.0, f'{b}_ps1_nframes_local': 10.0, f'{b}_ps1_detected': bool(meas and flux > 0 and flux / err >= 5), f'{b}_ps1_nFrames': 10.0,
                   f'{b}_ps1_psf': 20.0 if meas and flux > 0 else np.nan, f'{b}_ps1_psf_err': 0.1,
                   f'{b}_ps1_kron': np.nan, f'{b}_ps1_kron_err': np.nan, f'{b}_sigma': np.nan})
     return r
@@ -105,12 +105,12 @@ def test_a_flagged_ps1_band_is_never_read_as_a_non_detection(src):
 def test_one_sided_bands_use_the_sub_threshold_measurement_where_brighter_than_the_limit(src):
     used = lambda case, b: ff.compared_magnitudes(src.loc[[case]], b)                                                 # (ztf, ztf_err, ps1, ps1_err)
     assert used('4', 'g')[2][0] == 20.0 and used('4', 'g')[3][0] > 0 and src.loc['4', 'g_ps1_use_forced']                   # PS1 'L' with a forced mag
-    assert used('10', 'g')[2][0] == 23.0 and not src.loc['10', 'g_ps1_use_forced']                                       # no PS1 object: the limit
+    assert used('10', 'g')[2][0] == src.loc['10', 'g_ps1_limit'] and not src.loc['10', 'g_ps1_use_forced']                                       # no PS1 object: the limit
     assert used('4 mirrored', 'g')[0][0] == 20.0 and used('4 mirrored', 'g')[1][0] > 0 and src.loc['4 mirrored', 'g_ztf_use_meas']   # ZTF 'L', symmetric
     assert used('13', 'g')[0][0] == 21.0 and used('13', 'g')[1][0] == 0                                                  # no detection: the completeness limit, not MAGLIM
     s = ff.assign_catalogs(pd.DataFrame([object_row('DDD', 'LFF')], index=['forced <= 0']), OFF)                        # in_ztf, no magnitude in r, i: the limit
     z, ze, p, pe = ff.compared_magnitudes(s, 'r')
-    assert p[0] == 23.0 and pe[0] == 0 and s.loc['forced <= 0', 'r_cat'] == 1
+    assert p[0] == s.loc['forced <= 0', 'r_ps1_limit'] and pe[0] == 0 and s.loc['forced <= 0', 'r_cat'] == 1
 
 
 def test_an_in_both_object_drops_its_one_sided_bands_and_the_limit_is_never_used_for_it(src):
@@ -307,11 +307,11 @@ def _reference_field(rng, n=6000, kron_offset=0.0):
     for b in BANDS:
         s[f'{b}_ztf_psf'] = np.where(s[f'{b}_ztf_det'], np.r_[mag, mag], np.nan); s[f'{b}_ztf_kron'] = s[f'{b}_ztf_psf'] - kron_offset; s[f'{b}_ztf_kron_err'] = 0.1
         s[f'{b}_ps1_psf'] = np.where(s[f'{b}_ps1_detected'], np.r_[mag, mag], np.nan); s[f'{b}_ps1_kron'] = s[f'{b}_ps1_psf'] - kron_offset; s[f'{b}_ps1_kron_err'] = 0.1
-        s[f'{b}_ztf_maglim'] = 23.6; s[f'{b}_ps1_depth'] = 23.2
+        s[f'{b}_ztf_maglim'] = 23.6; s[f'{b}_ps1_nFrames'] = 30.0
     return s, mag, rec
 
 
-def test_completeness_limits_run_both_ways_in_the_magnitude_each_reference_object_compares():
+def test_completeness_limits_run_both_ways_in_the_magnitude_each_reference_object_compares(monkeypatch):
     s, mag, rec = _reference_field(np.random.default_rng(0))
     expected = 21 + 2 * (1 - ff.LIMIT_COMPLETENESS)
     out = ff.completeness_limits(s, OFF)                                       # point sources: PSF
@@ -322,7 +322,7 @@ def test_completeness_limits_run_both_ways_in_the_magnitude_each_reference_objec
     assert not ff.point_source(ext).any()
     for survey in ('ztf', 'ps1'):
         assert ext_out[f'g_{survey}_limit'].iloc[0] == pytest.approx(expected - 0.5, abs=0.15)
-    s['g_ps1_depth'] = 20.0                                                    # the per-object PS1 depth caps the PS1 limit
+    monkeypatch.setattr(ff, 'ps1_depth', lambda src, b: np.full(len(src), 20.0))   # a nominal depth shallower than measured caps it
     assert (ff.completeness_limits(s, OFF).g_ps1_limit == 20.0).all()
 
 
@@ -332,7 +332,7 @@ def test_the_reference_excludes_detections_that_fail_their_own_checks_but_not_th
     junk = pd.DataFrame([object_row('XXX', '---') for _ in range(len(mag) // 2)])     # flagged ZTF detections PS1 never recovers, 18-21 mag
     for b in BANDS:
         junk[f'{b}_ztf_psf'] = np.linspace(18, 21, len(junk)); junk[f'{b}_ztf_kron'] = junk[f'{b}_ztf_psf']; junk[f'{b}_ztf_kron_err'] = 0.1
-        junk[f'{b}_ztf_maglim'] = 23.6; junk[f'{b}_ps1_depth'] = 23.2
+        junk[f'{b}_ztf_maglim'] = 23.6; junk[f'{b}_ps1_nFrames'] = 30.0
     assert ff.completeness_limits(pd.concat([s, junk], ignore_index=True), OFF).g_ps1_limit.iloc[0] == pytest.approx(expected, abs=0.15)
     junk_rows = np.flatnonzero((mag < 21.5) & (np.arange(len(mag)) % 2 == 0))                      # half the bright ZTF objects: under a mask, unrecovered
     masked = s.copy(); masked.loc[masked.index[junk_rows], ['bright_star_d_over_R', 'bright_star_masked']] = [0.5, True]
@@ -347,7 +347,7 @@ def test_a_band_records_whether_it_compares_psf_or_kron_and_the_magnitudes_follo
     s, mag, rec = _reference_field(np.random.default_rng(0))
     point, extended = object_row('DDD', '---'), object_row('DDD', '---')
     for r in (point, extended):
-        r.update({f'{b}_ztf_kron_err': 0.1 for b in BANDS}); r.update({f'{b}_ztf_maglim': 23.6 for b in BANDS}); r.update({f'{b}_ps1_depth': 23.2 for b in BANDS})
+        r.update({f'{b}_ztf_kron_err': 0.1 for b in BANDS}); r.update({f'{b}_ztf_maglim': 23.6 for b in BANDS}); r.update({f'{b}_ps1_nFrames': 30.0 for b in BANDS})
     point.update({f'{b}_ztf_kron': 20.0 for b in BANDS}); extended.update({f'{b}_ztf_kron': 19.0 for b in BANDS})
     table = pd.concat([s, pd.DataFrame([point, extended], index=['point', 'extended'])])
     out = ff.assign_catalogs(table, OFF)
@@ -380,12 +380,13 @@ def test_a_limit_only_supports_a_change_in_the_direction_it_constrains():
     rows = {'in_ztf brighter than the PS1 limit': object_row('DDD', '---'), 'in_ztf fainter than the PS1 limit': object_row('DDD', '---'),
             'in_pstarr brighter than the ZTF limit': object_row('UUU', 'DDD'), 'in_pstarr fainter than the ZTF limit': object_row('UUU', 'DDD'),
             'in_ztf against a forced measurement': object_row('DDD', 'LLL')}
-    rows['in_ztf fainter than the PS1 limit'].update({f'{b}_ztf_psf': 23.5 for b in BANDS})         # PS1 depth 23.0
+    rows['in_ztf fainter than the PS1 limit'].update({f'{b}_ztf_psf': 23.5 for b in BANDS})         # PS1 depth ~23.2 (10 frames)
     rows['in_pstarr fainter than the ZTF limit'].update({f'{b}_ps1_psf': 21.5 for b in BANDS})      # ZTF MAGLIM 21.0
     rows['in_ztf against a forced measurement'].update({f'{b}_ps1_psf': 20.5 for b in BANDS})       # ZTF 20: fainter in PS1, two-sided
     s = ff.assign_catalogs(pd.DataFrame(list(rows.values()), index=list(rows)), OFF)
     out = ff.annotate_sigma(s, {b: Env() for b in BANDS})
-    assert out.g_sigma.round(1).tolist() == [-30.0, 0.0, 10.0, 0.0, -5.0]
+    lim = s.loc['in_ztf brighter than the PS1 limit', 'g_ps1_limit']
+    assert out.g_sigma.round(1).tolist() == [round((20.0 - lim) / 0.1, 1), 0.0, 10.0, 0.0, -5.0]
 
 
 def test_every_step_carries_its_group_in_pipeline_order():
@@ -506,3 +507,8 @@ def test_the_proper_motion_cut_uses_the_components_errors_in_quadrature():
     assert ff.gaia_pm_significance(s)[:2] == pytest.approx([10.0, 10 / 3])       # pm 5, sigma 0.5 and 1.5
     pm_ok, plx_ok = ff.gaia_population_ok(s)
     assert list(pm_ok) == [False, True, True] and list(plx_ok) == [True, True, True]   # no Gaia match passes
+
+
+def test_the_ps1_depth_uses_the_objects_own_frames_and_the_local_estimate_only_without_them():
+    s = pd.DataFrame({'g_ps1_nFrames': [12.0, np.nan, 0.0], 'g_ps1_nframes_local': [3.0, 3.0, 3.0]})
+    assert list(ff.ps1_nframes(s, 'g')) == [12.0, 3.0, 3.0]

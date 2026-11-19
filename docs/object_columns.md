@@ -106,7 +106,6 @@ Object-level:
 | `ztf_idx` | int64 | O | row in `ztf_objects.parquet`, -1 for PS1-only rows |
 | `ps1_idx` | int64 | O | row in `ps1.parquet`, -1 without a PS1 object |
 | `{b}_ccd`, `{b}_qid` | int16 / int8 | O | the ZTF image band b is judged in: the detection's own image, else the covering image `ztf_coverage` chose (valid, clean, deepest); -1 if none |
-| `ccd`, `qid` | int16 / int8 | O | a label quadrant for cutouts: the r-band one, else g, else i |
 | `ps1_objid` | int64 | N | PS1 `objID`, -1 without a PS1 object |
 | `ps1_ra`, `ps1_dec` | float64 | O | PS1 object's own position (`ps1.ra/dec`: stack, else mean) |
 | `ps1_qualityFlag` | int64 | N | `qualityFlag` (0 without a PS1 object) |
@@ -145,8 +144,7 @@ Per band, PS1 side (from the PS1 object; NaN / 0 / -1 without one):
 | `{b}_ps1_projcell`, `{b}_ps1_skycell` | int32 / int16 | N | `{b}_projcell`, `{b}_skycell` (-1 without) |
 | `{b}_ps1_meas` | bool | O | finite flux with error > 0 (forced included) |
 | `{b}_ps1_snr` | float32 | O | `flux / flux_err` (floored) where `_meas` |
-| `{b}_ps1_limit_nframes` | float32 | O | own nFrames if >= 1, else median nFrames of the 5 nearest PS1 objects within 60" (`nframes_at`) |
-| `{b}_ps1_depth` | float32 | O | nominal 5σ stack depth for that nFrames, mag (`ps1_stack.stack_depth`) |
+| `{b}_ps1_nframes_local` | float32 | O | median nFrames of the 5 nearest PS1 objects within 60" (`nframes_at`); the stack depth used where the object has no nFrames of its own (`ps1_nframes`, `ps1_depth`) |
 
 ### 4b. Gaia (`annotate_gaia`, Gaia DR3 propagated to J2021.0, nearest within 5")
 
@@ -184,7 +182,7 @@ Per band, PS1 side (from the PS1 object; NaN / 0 / -1 without one):
 | column | dtype | meaning |
 |---|---|---|
 | `{b}_ztf_limit` | float32 | ZTF's 90% recovery limit of clean PS1 detections in the band's quadrant, each binned by the magnitude it compares (Kron if extended, else PSF); capped at MAGLIM |
-| `{b}_ps1_limit` | float32 | PS1's 90% recovery limit of clean ZTF detections in the band's quadrant, same magnitude rule; capped at the stack depth and `{b}_ps1_depth` |
+| `{b}_ps1_limit` | float32 | PS1's 90% recovery limit of clean ZTF detections in the band's quadrant, same magnitude rule; capped at the stack depth and `ps1_depth` |
 
 ### 4g. Statuses, catalog, magnitudes used (`assign_catalogs`)
 
