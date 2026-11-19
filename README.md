@@ -40,6 +40,7 @@ The quality checks (step 1), each answering "is the data at this position sound?
 
 Code: `Source_Analysis/filter_field.py` (`usable_sides`, `detection_status`, `COMPARISON`, `object_catalog`, `real_checks`, `completeness_limits`, `kde_envelopes`,
 `judge_bands`); every object's record of what happened to it is in `objects.parquet` (`{b}_dropped_by`, `outcome`; `python -m Source_Analysis.filter_field explain FIELD RA DEC`).
+Every column of the field tables and the object table, native or ours: `docs/object_columns.md`.
 Walkthrough with field 860: `Notebooks/pipeline_review_860.ipynb`.
 
 ## Workflow Overview
