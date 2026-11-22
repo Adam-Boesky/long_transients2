@@ -3,7 +3,8 @@
 Runs on the field tables from `Extracting.field_tables` (ZTF objects merged across g, r, i with our Kron photometry,
 matched to the deduplicated PS1 catalog at 1"). Every object is a row (a ZTF object with its PS1 match, if any, or an
 unmatched PS1 object), and every band of it is judged in the same order, each step tagged with its purpose (GROUPS;
-`Waterfall.groups`, boxed in `Waterfall.flowchart`):
+`Waterfall.groups`; tables `quality_table`, `sort_table`, `catalog_table`; flowcharts `quality_flowchart`,
+`catalog_flowchart`):
 
   1. quality (`usable_sides`): each survey's side of the band passes its quality checks or is X, unusable for a
      measurement or a limit. ZTF (`ztf_checks`): outside every Gaia G < 16 star's mask (the circle `bright_star_radius`
@@ -61,8 +62,7 @@ not the seeing.
 
 The optional cuts are a `Cuts` (defaults: the full pipeline; `NO_CUTS`: none of them), passed through `filter_field`,
 `filter_prepared`, `assign_catalogs`, `cut_bands` and `run_branch`. Everything is a function of a pandas frame; the
-only state is the `Waterfall` record each catalog returns, from which the flowchart and the dropped tables are
-derived.
+only state is the `Waterfall` record each catalog returns, from which the outcomes are derived.
 """
 import os
 import warnings
@@ -883,7 +883,6 @@ def annotate_bright_stars(src: pd.DataFrame, stars: pd.DataFrame, out_to: float 
 
 # ----------------------------------------------------------------------------------------------- branches
 
-COMBOS = ('gri', 'gr', 'gi', 'ri')                  # band combinations an object can be counted under
 GROUPS = {                                          # what each waterfall step decides, in pipeline order
     'structure': 'what is compared',
     'quality': 'is the data usable?',
@@ -897,8 +896,8 @@ GROUPS = {                                          # what each waterfall step d
 
 @dataclass
 class Waterfall:
-    """One branch's record: the per-band keep-masks after each step, counted as objects split by the exact combination
-    of bands still in (as in the old pipeline's flowcharts)."""
+    """One branch's record: the per-band keep-masks after each step (what `annotate_outcomes` reads), counted as objects
+    still in and bands still in. The tables and flowcharts are `quality_table`, `catalog_table` and their flowcharts."""
     catalog: str
     steps: List[str] = field(default_factory=list)
     groups: List[str] = field(default_factory=list)                       # step -> its GROUPS key
@@ -913,9 +912,8 @@ class Waterfall:
         self.groups.append(group)
         self.packed.append({b: np.packbits(np.asarray(m, bool)) for b, m in band_masks.items()})
         m = {b: np.asarray(band_masks[b], bool) for b in BANDS}
-        exact = lambda combo: np.logical_and.reduce([m[b] if b in combo else ~m[b] for b in BANDS])
-        c = {k: int(np.count_nonzero(exact(k))) for k in COMBOS}
-        self.counts.append({'objects': sum(c.values()), **c})
+        self.counts.append({'objects': int(np.count_nonzero(np.logical_or.reduce(list(m.values())))),
+                            **{b: int(np.count_nonzero(m[b])) for b in BANDS}})
 
     def mask(self, i: int) -> Dict[str, np.ndarray]:
         """The per-band keep-masks after step i (an index into `steps`)."""
@@ -927,50 +925,14 @@ class Waterfall:
 
     @property
     def stats(self) -> pd.DataFrame:
-        """Objects left after each step, and their band combinations."""
+        """Objects left after each step, and the bands left in each."""
         return pd.DataFrame([{'group': g, 'step': s, **c} for g, s, c in zip(self.groups, self.steps, self.counts)],
-                            columns=['group', 'step', 'objects', *COMBOS])
+                            columns=['group', 'step', 'objects', *BANDS])
 
     def dropped_by(self, label: str) -> Dict[str, np.ndarray]:
         i = self.steps.index(label)
         before, after = self.mask(i - 1), self.mask(i)
         return {b: before[b] & ~after[b] for b in BANDS}
-
-    def flowchart(self, title: Optional[str] = None, boxes: bool = True):
-        """Flowchart in the old pipeline's style: objects and their band combinations after each step, boxes sized to
-        their text, the cut on each arrow; with `boxes`, a dashed frame around each run of steps of one group
-        (GROUPS), named at its top right."""
-        import schemdraw
-        from schemdraw import flow
-        from schemdraw.elements import Line, Rect, Label
-        text = lambda c: f"objects: {c['objects']:,}\n" + '\n'.join(f'{k}: {c[k]:,}' for k in COMBOS)
-        size = lambda t, pad: (_box_width_for_text(t, padding=pad), 0.45 * (t.count('\n') + 1) + 0.4)
-        label_w = max(_box_width_for_text(l, padding=0.0) for l in self.steps[1:]) if len(self.steps) > 1 else 0.0
-        runs = []                                                             # (group, first step, last step) of each run
-        for i, g in enumerate(self.groups):
-            if i and runs and runs[-1][0] == g and i > 0:
-                runs[-1][2] = i
-            elif i:
-                runs.append([g, i, i])
-        with schemdraw.Drawing(show=False) as d:
-            t = f'{title or self.catalog}\n' + text(self.counts[0])
-            w, h = size(t, 1.0)
-            prev = d.add(flow.Start(w=w, h=h).label(t))
-            elems = [prev]
-            for label, c in zip(self.steps[1:], self.counts[1:]):
-                d += flow.Arrow().down(d.unit / 2).at(prev.S).label(label)
-                t = text(c); w, h = size(t, 0.5)
-                prev = d.add(flow.Box(w=w, h=h).anchor('N').label(t))
-                elems.append(prev)
-            left, right = -label_w - 3.6, max(e.E[0] for e in elems) + 0.4
-            if boxes:
-                for g, i, j in runs:
-                    top = elems[i - 1].S[1] - 0.15                               # from just under the previous box ...
-                    bottom = elems[j].S[1] - 0.2                                 # ... to just under the run's last box
-                    d += Rect(corner1=(left, bottom), corner2=(right, top)).at((0, 0)).theta(0).linestyle('--').color('gray')
-                    d += Label().at((right - 0.15, top - 0.05)).label(g, halign='right', valign='top', color='gray')
-            d += Line().at((left - 0.4, 0)).to((left - 0.39, 0)).color('none')   # room for the arrow labels
-        return d
 
 
 def ztf_sharpness(src: pd.DataFrame) -> np.ndarray:
@@ -1080,12 +1042,30 @@ def cut_bands(src: pd.DataFrame, catalog: int, cuts: Cuts = Cuts()) -> Tuple[Wat
             m[b] &= alive
         wf.add(label, m, 'confident')
     keep = alive.copy()
-    pm_ok, plx_ok = gaia_population_ok(src)
-    keep &= pm_ok
-    wf.add('Gaia: no proper motion at 5σ', {b: keep & m[b] for b in BANDS}, 'population')
-    keep &= plx_ok
-    wf.add('Gaia: no parallax at 5σ', {b: keep & m[b] for b in BANDS}, 'population')
+    for label, ok in population_checks(src):
+        keep &= ok
+        wf.add(label, {b: keep & m[b] for b in BANDS}, 'population')
     return wf, {b: keep & m[b] for b in BANDS}
+
+
+def population_checks(src: pd.DataFrame) -> List[Tuple[str, np.ndarray]]:
+    """Object-wide Gaia checks, (label, passes) in order (`gaia_population_ok`)."""
+    pm_ok, plx_ok = gaia_population_ok(src)
+    return [(f'Gaia: no proper motion at {GAIA_NSIGMA:.0f}σ', pm_ok), (f'Gaia: no parallax at {GAIA_NSIGMA:.0f}σ', plx_ok)]
+
+
+SIGMA_STEP = f'|σ| > {SIGMA_BOUNDARY:.0f} in >= 2 bands'
+SIGN_STEP = '... >= 2 of them the same sign'
+
+
+def interesting_checks(src: pd.DataFrame) -> List[Tuple[str, np.ndarray]]:
+    """The |sigma| checks over each object's compared bands (`{b}_cat` >= 0), (label, passes) in order; what
+    `judge_bands` applies to the bands that reach it."""
+    sig = {b: np.where(src[f'{b}_cat'].values >= 0, src[f'{b}_sigma'].values, np.nan) for b in BANDS}
+    n_big = sum((np.abs(sig[b]) > SIGMA_BOUNDARY).astype(int) for b in BANDS)
+    pos = sum((sig[b] > SIGMA_BOUNDARY).astype(int) for b in BANDS)
+    neg = sum((sig[b] < -SIGMA_BOUNDARY).astype(int) for b in BANDS)
+    return [(SIGMA_STEP, n_big >= 2), (SIGN_STEP, np.maximum(pos, neg) >= 2)]
 
 
 def judge_bands(src: pd.DataFrame, wf: Waterfall, reach: Dict[str, np.ndarray], cuts: Cuts = Cuts()) -> pd.DataFrame:
@@ -1095,11 +1075,11 @@ def judge_bands(src: pd.DataFrame, wf: Waterfall, reach: Dict[str, np.ndarray], 
         sig = {b: np.where(bands[b], src[f'{b}_sigma'].values, np.nan) for b in BANDS}
         big = {b: np.abs(sig[b]) > SIGMA_BOUNDARY for b in BANDS}
         keep = keep & (sum(big[b].astype(int) for b in BANDS) >= 2)
-        wf.add(f'|σ| > {SIGMA_BOUNDARY:.0f} in >= 2 bands{suffix}', {b: keep & big[b] for b in BANDS}, group)
+        wf.add(SIGMA_STEP + suffix, {b: keep & big[b] for b in BANDS}, group)
         pos = sum((sig[b] > SIGMA_BOUNDARY).astype(int) for b in BANDS)
         neg = sum((sig[b] < -SIGMA_BOUNDARY).astype(int) for b in BANDS)
         keep = keep & (np.maximum(pos, neg) >= 2)
-        wf.add(f'... >= 2 of them the same sign{suffix}', {b: keep & big[b] for b in BANDS}, group)
+        wf.add(SIGN_STEP + suffix, {b: keep & big[b] for b in BANDS}, group)
         return keep, big
     keep, big = sigma_steps(reach, np.logical_or.reduce(list(reach.values())), 'interesting')
     if cuts.snr_keep is not None:               # the best of the candidates: every measured side at this S/N
@@ -1116,6 +1096,152 @@ def run_branch(src: pd.DataFrame, catalog: int, cuts: Cuts = Cuts()) -> Tuple[pd
     """One catalog's whole chain on a table that already has `{b}_sigma`. Returns (candidates, waterfall)."""
     wf, reach = cut_bands(src, catalog, cuts)
     return judge_bands(src, wf, reach, cuts), wf
+
+# ----------------------------------------------------------------------------------------------- summaries
+
+SURVEY_CHECKS = {'ztf': lambda src, b, cuts: ztf_checks(src, b, src.point_source.values, cuts),
+                 'ps1': lambda src, b, cuts: ps1_checks(src, b, cuts)}
+SURVEY_NAME = {'ztf': 'ZTF', 'ps1': 'PS1'}
+
+
+def check_table(checks: List[Tuple[str, np.ndarray]], start: np.ndarray) -> pd.DataFrame:
+    """Per check over the `start` rows, in order: `after` (passing it and every earlier check), `total fail` (failing
+    it), `unique` (failing it and no other check), each with its % of the start."""
+    n = max(int(start.sum()), 1)
+    fails = [start & ~np.asarray(ok, bool) for _, ok in checks]
+    n_fail = sum(f.astype(np.int8) for f in fails) if checks else None
+    rows, alive = [], start.copy()
+    for (label, ok), f in zip(checks, fails):
+        alive &= ok
+        tot, uniq = int(f.sum()), int((f & (n_fail == 1)).sum())
+        rows.append({'check': label, 'after': int(alive.sum()), 'total fail': tot, 'total fail %': 100 * tot / n,
+                     'unique': uniq, 'unique %': 100 * uniq / n})
+    return pd.DataFrame(rows, columns=['check', 'after', 'total fail', 'total fail %', 'unique', 'unique %']).set_index('check')
+
+
+def quality_table(src: pd.DataFrame, survey: str, cuts: Cuts = Cuts()) -> pd.DataFrame:
+    """`check_table` of one survey's quality checks (`ztf_checks` or `ps1_checks`) per band over every object, each band
+    on its own; indexed by (band, check)."""
+    start = np.ones(len(src), bool)
+    return pd.concat({b: check_table(SURVEY_CHECKS[survey](src, b, cuts), start) for b in BANDS}, names=['band', 'check'])
+
+
+def catalog_checks(src: pd.DataFrame, catalog: int, cuts: Cuts = Cuts()) -> List[Tuple[str, np.ndarray]]:
+    """A catalog's object-wide checks after the sort, in order: `real_checks`, `population_checks`, then
+    `interesting_checks` once `{b}_sigma` is annotated."""
+    sigma = interesting_checks(src) if all(f'{b}_sigma' in src for b in BANDS) else []
+    return real_checks(src, catalog, cuts) + population_checks(src) + sigma
+
+
+def catalog_table(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
+    """`check_table` of `catalog_checks` per catalog over the objects sorted into it; indexed by (catalog, check). The
+    optional `snr_keep` step is not included."""
+    return pd.concat({name: check_table(catalog_checks(src, k, cuts), src.catalog.values == k) for k, name in CATALOG.items()},
+                     names=['catalog', 'check'])
+
+
+def sort_table(src: pd.DataFrame) -> pd.DataFrame:
+    """Objects by the bands with a comparison of any kind (`comparison` of the band's statuses, before an in_both object
+    drops its one-sided bands) against the catalog they are sorted into."""
+    combo = np.full(len(src), '', dtype=object)
+    for b in BANDS:
+        c = comparison(src[f'{b}_ztf_status'].values.astype(str), src[f'{b}_ps1_status'].values.astype(str))
+        combo = combo + np.where(c >= 0, b, '')
+    combo = np.where(combo == '', 'none', combo)
+    cat = pd.Series(src.catalog.values).map({**CATALOG, -1: NOT_COMPARABLE})
+    t = pd.crosstab(pd.Series(combo, name='compared bands'), cat.rename('catalog'))
+    order = ['gri', 'gr', 'gi', 'ri', 'g', 'r', 'i', 'none']
+    t = t.reindex(index=[o for o in order if o in t.index], columns=[*CATALOG.values(), NOT_COMPARABLE], fill_value=0)
+    t['total'] = t.sum(axis=1)
+    return pd.concat([t, t.sum().rename('total').to_frame().T])
+
+
+def significant_bands_table(candidates: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Candidates by their compared bands with |sigma| > SIGMA_BOUNDARY, per catalog."""
+    cols = {}
+    for name, cand in candidates.items():
+        combo = np.full(len(cand), '', dtype=object)
+        for b in BANDS:
+            big = (cand[f'{b}_cat'].values >= 0) & (np.abs(cand[f'{b}_sigma'].values) > SIGMA_BOUNDARY)
+            combo = combo + np.where(big, b, '')
+        cols[name] = pd.Series(combo, dtype=object).value_counts()
+    t = pd.DataFrame(cols).fillna(0).astype(int)
+    first = [o for o in ('gri', 'gr', 'gi', 'ri') if o in t.index]
+    return t.reindex(first + [o for o in t.index if o not in first])
+
+
+def _fraction(v: float) -> str:
+    return f'{v:.3f}' if v >= 0.001 or v == 0 else f'{v:.1e}'
+
+
+def _rows_text(rows: List[Tuple[str, Optional[int], Optional[float]]]) -> str:
+    """Box text: a header, then one line per (name, pass, fraction of the start); None prints a dash."""
+    w = max(len(r[0]) for r in rows)
+    head = f"{'':<{w}}  {'Pass':>11}  {'Fraction':>8}"
+    lines = [f"{name:<{w}}  {('—' if n is None else f'{n:,}'):>11}  {('—' if f is None else _fraction(f)):>8}" for name, n, f in rows]
+    return '\n'.join([head] + lines)
+
+
+def _flowchart(start: str, steps: List[Tuple[str, str]], end: Optional[Tuple[str, str]] = None):
+    """A vertical chain of boxes: `start`, then each (arrow label, box text), then the optional `end` the same way;
+    monospace box text so the columns line up."""
+    import schemdraw
+    from schemdraw import flow
+    from schemdraw.elements import Line
+    font, fontsize = 'monospace', 14                           # schemdraw's default size; a monospace glyph is ~0.6 em
+    size = lambda t, pad: (max(len(l) for l in t.split('\n')) * 0.6 * fontsize / 72 / 0.5 + 2 * pad, 0.45 * (t.count('\n') + 1) + 0.4)
+    chain = steps + ([end] if end else [])
+    label_w = max((_box_width_for_text(l, padding=0.0) for l, _ in chain), default=0.0)
+    with schemdraw.Drawing(show=False) as d:
+        w, h = size(start, 1.5)
+        prev = d.add(flow.Start(w=w, h=h).label(start, font=font))
+        for label, text in chain:
+            d += flow.Arrow().down(d.unit / 2).at(prev.S).label(label)
+            w, h = size(text, 1.0)
+            prev = d.add(flow.Box(w=w, h=h).anchor('N').label(text, font=font))
+        d += Line().at((-label_w - 4.0, 0)).to((-label_w - 3.99, 0)).color('none')   # room for the arrow labels
+    return d
+
+
+def quality_flowchart(src: pd.DataFrame, survey: str, cuts: Cuts = Cuts(), table: Optional[pd.DataFrame] = None):
+    """One survey's quality checks as a flowchart: every object, then each check with g, r, i on their own (Pass:
+    passing it and every earlier check; Fraction: of every object), then the usable sides (Total) split into Detected
+    (D, S/N >= SNR_MIN) and Undetected (L or U)."""
+    table = quality_table(src, survey, cuts) if table is None else table
+    n = len(src)
+    checks = list(table.loc[BANDS[0]].index)
+    steps = [(c, _rows_text([(b, int(table.loc[(b, c), 'after']), table.loc[(b, c), 'after'] / n) for b in BANDS])) for c in checks]
+    w = 10
+    det = [f"{'':<2}  " + '  '.join(f'{h:>{w}}' for h in ('Total', 'Detected', 'Undetected'))]
+    for b in BANDS:
+        st = pd.Series(src[f'{b}_{survey}_status'].values.astype(str)).value_counts()
+        counts = (n - st.get('X', 0), st.get('D', 0), st.get('L', 0) + st.get('U', 0))
+        det.append(f'{b:<2}  ' + '  '.join(f'{int(c):>{w},}' for c in counts))
+    return _flowchart(f'{SURVEY_NAME[survey]} quality\nobjects {n:,}', steps, (f'SNR >= {SNR_MIN:g}', '\n'.join(det)))
+
+
+def catalog_flowchart(src: pd.DataFrame, cuts: Cuts = Cuts(), table: Optional[pd.DataFrame] = None):
+    """The catalogs' object-wide checks after the sort as one flowchart: the objects sorted into each catalog, then
+    each check with in_both, in_ztf, in_pstarr (Pass: passing it and every earlier check; Fraction: of the
+    objects sorted into the catalog; a dash where the catalog has no such check)."""
+    table = catalog_table(src, cuts) if table is None else table
+    names = list(CATALOG.values())
+    start = {name: int((src.catalog.values == k).sum()) for k, name in CATALOG.items()}
+    order: List[str] = []                                   # every catalog's checks, in chain order
+    for name in names:
+        own = list(table.loc[name].index)
+        for i, c in enumerate(own):
+            if c not in order:
+                prev = [x for x in own[:i] if x in order]
+                order.insert(order.index(prev[-1]) + 1 if prev else 0, c)
+    def row(name, c):
+        if c not in table.loc[name].index:
+            return (name, None, None)
+        after = int(table.loc[(name, c), 'after'])
+        return (name, after, after / max(start[name], 1))
+    steps = [(c, _rows_text([row(name, c) for name in names])) for c in order]
+    return _flowchart('sorted into catalogs\n' + _rows_text([(name, start[name], 1.0) for name in names]), steps)
+
 
 # ----------------------------------------------------------------------------------------------- driver
 
@@ -1264,8 +1390,13 @@ def filter_field(field_id: int, data_dir: Optional[str] = None, cuts: Cuts = Cut
         src.to_parquet(os.path.join(out, 'objects.parquet'))
         for cname, cand in candidates.items():
             cand.to_parquet(os.path.join(out, f'{cname}_candidates.parquet'))
-        for name, wf in waterfalls.items():
-            wf.stats.to_csv(os.path.join(out, f'{name}_stats.csv'), index=False)
+        for old in [f'{name}_stats.csv' for name in ['all', *CATALOG.values()]]:   # the previous layout's tables
+            if os.path.exists(os.path.join(out, old)):
+                os.remove(os.path.join(out, old))
+        for survey in SURVEY_CHECKS:
+            quality_table(src, survey, cuts).to_csv(os.path.join(out, f'quality_{survey}.csv'))
+        sort_table(src).to_csv(os.path.join(out, 'sort.csv'))
+        catalog_table(src, cuts).to_csv(os.path.join(out, 'catalogs.csv'))
         for b, env in envelopes.items():
             np.savez(os.path.join(out, f'envelope_{b}.npz'), mag_grid=env.mag_grid, dmag_grid=env.dmag_grid, kde_ys=env.kde_ys)
     return src, envelopes, candidates, waterfalls
