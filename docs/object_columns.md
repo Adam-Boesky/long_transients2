@@ -94,7 +94,7 @@ Data/fields/<field>/
 | `{b}_covered`, `{b}_ccd`, `{b}_qid`, `{b}_nan_dist_px`, `{b}_maglim` | ZTF at the PS1 position, as in `ztf` |
 | `{b}_nframes_local` | median nFrames of the 5 nearest other PS1 objects within 60″ |
 
-## `merged`: one row per object (`match_ps1`, mutual nearest within 1″; `merge_tables`)
+## `merged`: one row per object (`match_ps1`, mutual nearest within 1″; `merge_tables`; `nearest_other`)
 
 Every ZTF object with its PS1 match, then every unmatched PS1 object. Values as measured or catalogued, no error floor.
 −1 / NaN / 0 where a survey has nothing.
