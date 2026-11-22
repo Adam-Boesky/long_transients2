@@ -469,9 +469,8 @@ def merge_tables(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
         cols[f'{b}_ps1_nFrames'] = from_ps1(ps1[f'{b}nFrames'].values.astype(float), np.nan).astype(np.float32)
         cols[f'{b}_ps1_nframes_local'] = np.concatenate([obj[f'{b}_ps1_nframes_local'].values, ps1[f'{b}_nframes_local'].values[ps1_only]]).astype(np.float32)
         cols[f'{b}_ps1_covered'] = np.concatenate([obj[f'{b}_ps1_covered'].values, np.ones(n_p, bool)])   # a PS1 object: PS1 reaches it
-    merged = pd.DataFrame(cols, copy=False)
-    merged['nearest_other_arcsec'] = nearest_other(merged)
-    return merged
+    cols['nearest_other_arcsec'] = nearest_other(pd.DataFrame({c: cols[c] for c in ('ra', 'dec', 'ztf_idx', 'ps1_idx', 'ps1_ra', 'ps1_dec')}))
+    return pd.DataFrame(cols, copy=False)
 
 
 NEAREST_MAX_ARCSEC = 60.0       # nearest_other_arcsec is NaN beyond this
