@@ -266,18 +266,6 @@ def test_isolation_cut_removes_one_sided_objects_with_any_other_object_within_3_
     assert alive(0, 3.0) == [False, False, False, False, True]                # in_both is never cut
 
 
-def test_nearest_other_object_counts_both_surveys_matched_or_not_but_not_the_objects_own_entries():
-    off = np.array([0, 2, 10, 1.5]) / 3600
-    src = pd.DataFrame({'ra': np.full(4, 10.0), 'dec': 20.0 + off,
-                        'ztf_idx': [0, 1, -1, 2], 'ps1_idx': [-1, -1, 0, 1],               # the last is a matched pair
-                        'ps1_ra': [np.nan, np.nan, 10.0, 10.0], 'ps1_dec': [np.nan, np.nan, 20.0 + 10 / 3600, 20.0 + 1.9 / 3600],
-                        **{f'{b}_ps1_meas': [False, False, True, True] for b in BANDS}})
-    for b in BANDS:
-        src[f'{b}_ztf_psf'] = src[f'{b}_ps1_psf'] = src[f'{b}_ztf_kron_rap'] = src[f'{b}_ps1_kron_rad'] = np.nan
-    d = ff.annotate_neighbours(src).nearest_other_arcsec.values
-    assert d == pytest.approx([1.5, 0.1, 8.0, 0.5], abs=1e-3)   # the pair's own PS1 entry (0.4" from its ZTF one) is skipped
-
-
 def test_the_completeness_limit_is_where_recovery_crosses_the_threshold_and_never_deeper_than_the_cap():
     rng = np.random.default_rng(0)
     mag = rng.uniform(18, 24, 20000)
@@ -358,6 +346,23 @@ def test_annotate_neighbours_kron_containment_is_against_brighter_objects_only()
         src[f'{b}_ztf_kron_rap'] = [3.0, 3.0, np.nan]; src[f'{b}_ps1_kron_rad'] = np.nan
     out = ff.annotate_neighbours(src)
     assert list(out.inside_brighter_kron) == [False, True, False]       # only the faint object sits in a brighter object's aperture
+
+
+def test_kron_containment_and_the_star_mask_use_exact_angles_far_from_the_fields_median_declination():
+    dec0 = 80.0
+    east = lambda arcsec: arcsec / 3600 / np.cos(np.radians(dec0))      # RA offset for a true east offset at dec0
+    # a bright object, a faint one 2.8" east of it (inside its 3" aperture), and filler rows at Dec 70 that pull the
+    # field's median declination far from 80, where a single cos(dec) misjudges east-west distances by ~2x
+    src = pd.DataFrame({'ra': [150.0, 150.0 + east(2.8), 10.0, 20.0, 30.0], 'dec': [dec0, dec0, 70.0, 70.0, 70.0],
+                        'ztf_idx': [0, 1, 2, 3, 4], 'ps1_idx': -1, 'ps1_ra': np.nan, 'ps1_dec': np.nan})
+    for b in BANDS:
+        src[f'{b}_ztf_psf'] = [16.0, 21.0, 20.0, 20.0, 20.0]; src[f'{b}_ps1_psf'] = np.nan
+        src[f'{b}_ztf_kron_rap'] = [3.0, np.nan, np.nan, np.nan, np.nan]; src[f'{b}_ps1_kron_rad'] = np.nan
+    assert list(ff.annotate_neighbours(src).inside_brighter_kron[:2]) == [False, True]
+    stars = pd.DataFrame({'ra': [150.0], 'dec': [dec0], 'phot_g_mean_mag': [18.0]})   # mask radius 4" at G = 18
+    obj = pd.DataFrame({'ra': [150.0 + east(6.0), 150.0 + east(3.0)], 'dec': [dec0, dec0]})
+    d = ff.annotate_bright_stars(pd.concat([obj, src[['ra', 'dec']].iloc[2:]], ignore_index=True), stars).bright_star_d_over_R.values
+    assert d[0] == pytest.approx(6.0 / 4.0, abs=0.01) and d[1] == pytest.approx(3.0 / 4.0, abs=0.01)
 
 
 def test_an_object_is_not_masked_by_its_own_star_entry():

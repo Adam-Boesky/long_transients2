@@ -30,7 +30,7 @@ from scipy.spatial import cKDTree
 from . import kron, ps1_stack
 from .ps1_stack import BANDS
 from .images import load_refimg
-from .utils import get_data_path
+from .utils import chord, chord_to_arcsec, get_data_path, sky_xyz
 from .ztf_products import product_dir, refimg_path
 
 MATCH_ARCSEC = 1.0
@@ -77,15 +77,6 @@ def field_quadrants(field: int, data_dir: Optional[str] = None, band: str = 'r')
 
 # ----------------------------------------------------------------------------------------------- matching helpers
 
-def _xyz(ra: np.ndarray, dec: np.ndarray) -> np.ndarray:
-    r, d = np.radians(ra), np.radians(dec)
-    return np.c_[np.cos(d) * np.cos(r), np.cos(d) * np.sin(r), np.sin(d)]
-
-
-def _chord(arcsec: float) -> float:
-    return 2.0 * np.sin(np.radians(arcsec / 3600.0) / 2.0)
-
-
 def mutual_nearest(ra1, dec1, ra2, dec2, radius_arcsec: float = MATCH_ARCSEC) -> Tuple[np.ndarray, np.ndarray]:
     """For each row of set 1, the index of its nearest row in set 2 within the radius if that row's nearest in set 1
     is it (else -1), and the separation in arcsec."""
@@ -93,9 +84,9 @@ def mutual_nearest(ra1, dec1, ra2, dec2, radius_arcsec: float = MATCH_ARCSEC) ->
     idx = np.full(len(ra1), -1); sep = np.full(len(ra1), np.nan)
     if len(ra1) == 0 or len(ra2) == 0:
         return idx, sep
-    p1, p2 = _xyz(ra1, dec1), _xyz(ra2, dec2)
-    d12, j12 = cKDTree(p2).query(p1, distance_upper_bound=_chord(radius_arcsec))
-    d21, j21 = cKDTree(p1).query(p2, distance_upper_bound=_chord(radius_arcsec))
+    p1, p2 = sky_xyz(ra1, dec1), sky_xyz(ra2, dec2)
+    d12, j12 = cKDTree(p2).query(p1, distance_upper_bound=chord(radius_arcsec))
+    d21, j21 = cKDTree(p1).query(p2, distance_upper_bound=chord(radius_arcsec))
     ok = np.isfinite(d12)
     ok[ok] &= j21[j12[ok]] == np.flatnonzero(ok)
     idx[ok] = j12[ok]
@@ -158,9 +149,9 @@ def dedupe_band(cat: pd.DataFrame, radius_arcsec: float = MATCH_ARCSEC) -> pd.Da
         rows = np.flatnonzero(keep)
         sub = cat.iloc[rows]
         edge = np.minimum.reduce([sub.x.values, sub.y.values, REF_SIZE_PX - sub.x.values, REF_SIZE_PX - sub.y.values])   # px to the image edge
-        p = _xyz(sub.ra.values, sub.dec.values)
+        p = sky_xyz(sub.ra.values, sub.dec.values)
         tree = cKDTree(p)
-        pairs = tree.query_pairs(_chord(radius_arcsec), output_type='ndarray')
+        pairs = tree.query_pairs(chord(radius_arcsec), output_type='ndarray')
         if len(pairs) == 0:
             break
         q = (sub.ccd.values * 10 + sub.qid.values)
@@ -239,7 +230,7 @@ def merge_bands(cats: Dict[str, pd.DataFrame], radius_arcsec: float = MATCH_ARCS
         e = np.delete(e, drop, axis=0)
     # one row per object, members by band
     w = np.where(np.isfinite(snr) & (snr > 0), snr, 1.0)
-    xyz = _xyz(ra, dec) * w[:, None]
+    xyz = sky_xyz(ra, dec) * w[:, None]
     sums = np.zeros((n_obj, 3)); np.add.at(sums, comp, xyz)
     norm = np.linalg.norm(sums, axis=1); sums /= norm[:, None]
     obj_ra = (np.degrees(np.arctan2(sums[:, 1], sums[:, 0])) + 360) % 360
@@ -251,7 +242,7 @@ def merge_bands(cats: Dict[str, pd.DataFrame], radius_arcsec: float = MATCH_ARCS
         obj[f'{b}_idx'] = idx
         has = idx >= 0
         member = cats[b].iloc[np.clip(idx, 0, None)]
-        sep = np.degrees(2 * np.arcsin(np.linalg.norm(_xyz(member.ra.values, member.dec.values) - _xyz(obj_ra, obj_dec), axis=1) / 2)) * 3600
+        sep = np.degrees(2 * np.arcsin(np.linalg.norm(sky_xyz(member.ra.values, member.dec.values) - sky_xyz(obj_ra, obj_dec), axis=1) / 2)) * 3600
         obj[f'{b}_sep'] = np.where(has, sep, np.nan)
     for b in BANDS:
         if b not in cats:
@@ -383,19 +374,19 @@ def ps1_neighbourhood(ra: np.ndarray, dec: np.ndarray, ps1: pd.DataFrame) -> pd.
     median `{b}nFrames` of the NFRAMES_NEIGHBOURS nearest PS1 objects with at least one frame, within
     NFRAMES_MAX_ARCSEC; NaN without any). `ps1` should be the untrimmed partition catalog, so positions near a field's
     edge see their neighbours outside it."""
-    pos = _xyz(ra, dec)
+    pos = sky_xyz(ra, dec)
     out = {}
     for b in BANDS:
         flux, err, frames = ps1[f'{b}PSFFlux'].values, ps1[f'{b}PSFFluxErr'].values, ps1[f'{b}nFrames'].values
         meas = np.isfinite(flux) & (err > 0)
-        p = _xyz(ps1.ra.values, ps1.dec.values)
-        out[f'{b}_ps1_covered'] = (np.isfinite(cKDTree(p[meas]).query(pos, k=1, distance_upper_bound=_chord(PS1_COVERAGE_ARCMIN * 60))[0])
+        p = sky_xyz(ps1.ra.values, ps1.dec.values)
+        out[f'{b}_ps1_covered'] = (np.isfinite(cKDTree(p[meas]).query(pos, k=1, distance_upper_bound=chord(PS1_COVERAGE_ARCMIN * 60))[0])
                                    if meas.any() else np.zeros(len(pos), bool))
         ok = frames >= 1
         local = np.full(len(pos), np.nan)
         if ok.any():
             k = min(NFRAMES_NEIGHBOURS, int(ok.sum()))
-            d, i = cKDTree(p[ok]).query(pos, k=k, distance_upper_bound=_chord(NFRAMES_MAX_ARCSEC))
+            d, i = cKDTree(p[ok]).query(pos, k=k, distance_upper_bound=chord(NFRAMES_MAX_ARCSEC))
             d, i = d.reshape(len(pos), -1), i.reshape(len(pos), -1)
             vals = np.where(np.isfinite(d), frames[ok][np.clip(i, 0, ok.sum() - 1)], np.nan)
             with warnings.catch_warnings():                                     # a position with no neighbour is an all-NaN row
@@ -478,7 +469,26 @@ def merge_tables(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
         cols[f'{b}_ps1_nFrames'] = from_ps1(ps1[f'{b}nFrames'].values.astype(float), np.nan).astype(np.float32)
         cols[f'{b}_ps1_nframes_local'] = np.concatenate([obj[f'{b}_ps1_nframes_local'].values, ps1[f'{b}_nframes_local'].values[ps1_only]]).astype(np.float32)
         cols[f'{b}_ps1_covered'] = np.concatenate([obj[f'{b}_ps1_covered'].values, np.ones(n_p, bool)])   # a PS1 object: PS1 reaches it
-    return pd.DataFrame(cols, copy=False)
+    merged = pd.DataFrame(cols, copy=False)
+    merged['nearest_other_arcsec'] = nearest_other(merged)
+    return merged
+
+
+NEAREST_MAX_ARCSEC = 60.0       # nearest_other_arcsec is NaN beyond this
+
+
+def nearest_other(merged: pd.DataFrame, max_arcsec: float = NEAREST_MAX_ARCSEC) -> np.ndarray:
+    """Exact angular distance (arcsec, float32) from each row of `merged` to the nearest other catalogued source: every
+    ZTF object at its position and every PS1 object at its own position, matched or not, before any filtering; the
+    row's own ZTF and PS1 entries are skipped. NaN beyond `max_arcsec`."""
+    ztf_rows, ps1_rows = np.flatnonzero(merged.ztf_idx.values >= 0), np.flatnonzero(merged.ps1_idx.values >= 0)
+    owner = np.r_[ztf_rows, ps1_rows]                                     # the row each entry belongs to
+    entries = np.r_[sky_xyz(merged.ra.values[ztf_rows], merged.dec.values[ztf_rows]),
+                    sky_xyz(merged.ps1_ra.values[ps1_rows], merged.ps1_dec.values[ps1_rows])]
+    d, k = cKDTree(entries).query(sky_xyz(merged.ra.values, merged.dec.values), k=3, distance_upper_bound=chord(max_arcsec))
+    own = owner[np.clip(k, 0, len(owner) - 1)] == np.arange(len(merged))[:, None]   # at most two entries are the row's own
+    nearest = np.where(own | ~np.isfinite(d), np.inf, d).min(axis=1)
+    return np.where(np.isfinite(nearest), chord_to_arcsec(np.where(np.isfinite(nearest), nearest, 0.0)), np.nan).astype(np.float32)
 
 
 def match_ps1(obj: pd.DataFrame, ps1: pd.DataFrame, radius_arcsec: float = MATCH_ARCSEC) -> pd.DataFrame:

@@ -12,6 +12,23 @@ from astropy.io import fits
 from astropy.table import MaskedColumn, Table
 
 
+def sky_xyz(ra: np.ndarray, dec: np.ndarray) -> np.ndarray:
+    """Unit vectors (N, 3) of positions in degrees, as astropy's `SkyCoord.cartesian`: KD-trees on these give exact
+    angular neighbours at any declination."""
+    r, d = np.radians(ra), np.radians(dec)
+    return np.c_[np.cos(d) * np.cos(r), np.cos(d) * np.sin(r), np.sin(d)]
+
+
+def chord(arcsec):
+    """The unit-vector (chord) distance of an angle in arcsec, for `sky_xyz` trees."""
+    return 2.0 * np.sin(np.radians(np.asarray(arcsec, float) / 3600.0) / 2.0)
+
+
+def chord_to_arcsec(c):
+    """The angle in arcsec of a chord distance between `sky_xyz` unit vectors."""
+    return np.degrees(2.0 * np.arcsin(np.clip(np.asarray(c, float), 0.0, 2.0) / 2.0)) * 3600.0
+
+
 def fitscheck_valid(fpath: str) -> bool:
     """Return True if the FITS file passes fitscheck and is not truncated."""
     result = subprocess.run(

@@ -133,6 +133,7 @@ Every ZTF object with its PS1 match, then every unmatched PS1 object. Values as 
 | `{b}_ps1_nFrames` | N (the object's own stack frames; NaN without a band row) |
 | `{b}_ps1_nframes_local` | median nFrames of the 5 nearest PS1 objects; used where the object has no frames of its own |
 | `{b}_ps1_covered` | PS1 measured something in b within 1′ |
+| `nearest_other_arcsec` | exact angle to the nearest other ZTF or PS1 entry, matched or not, before any filtering; the row's own entries skipped; NaN beyond 60″ (`nearest_other`) |
 
 
 ## `filter/objects`: `merged`, floored and annotated (`prepare_field`, `filter_prepared`)
@@ -150,8 +151,7 @@ Every `merged` column (errors and S/N with a 0.01 mag floor, `floor_err`), plus:
 | `ps1_catalog_missing` | no PS1 object, in a DR2 missing-data box or Dec < −30 (`annotate_skycells`) |
 | `bright_star_d_over_R` | to the nearest G < 16 star, in its mask radii (`annotate_bright_stars`) |
 | `in_star_spike` | in one of its four spike boxes |
-| `nearest_other_arcsec` | to the nearest other ZTF or PS1 entry, NaN beyond 60″ (`annotate_neighbours`) |
-| `inside_brighter_kron` | inside a brighter object's Kron aperture |
+| `inside_brighter_kron` | inside a brighter ZTF or PS1 object's Kron aperture (`annotate_neighbours`) |
 | `{b}_ztf_limit` | ZTF's 90% recovery limit in the band's quadrant, in the object's compared magnitude (`completeness_limits`) |
 | `{b}_ps1_limit` | PS1's, likewise |
 | `{b}_ztf_status`, `{b}_ps1_status` | D (S/N ≥ 5), L (below), U (nothing measured), X (fails quality) (`assign_catalogs`) |

@@ -34,8 +34,8 @@ unmatched PS1 object), and every band of it is judged in the same order, each st
      `reference_magnitude`), never deeper than the survey's nominal depth (ZTF's MAGLIM; `ps1_stack.stack_depth` of the stack's
      nFrames at the position);
   4. confident (`real_checks`, object-wide): optionally a ZTF sharpness (`ztf_sharpness`) within
-     `sharp_max` for point sources; for in_ztf and in_pstarr, optionally (`annotate_neighbours`) no other object of
-     either survey within `isolation_arcsec` nor inside a brighter object's Kron aperture (`neighbour_kron`): a
+     `sharp_max` for point sources; for in_ztf and in_pstarr, optionally no other object of either survey within
+     `isolation_arcsec` (`nearest_other_arcsec`, from the builder) nor inside a brighter object's Kron aperture (`neighbour_kron`): a
      one-sided object that close to another is most often a piece of the same light; for in_both and in_pstarr, PS1's
      own verdict on its detections: nStackDetections >= PS1_MIN_STACK_DETECTIONS and neither BAD_STACK nor
      SUSPECT_STACK (for in_ztf the PS1 side is a limit and these only say the object is faint there);
@@ -81,7 +81,7 @@ from matplotlib.font_manager import FontProperties
 from matplotlib.textpath import TextPath
 
 from Extracting.field_tables import BANDS, field_dir
-from Extracting.utils import get_data_path
+from Extracting.utils import chord, get_data_path, sky_xyz
 from source_db.constants import SIGMA_CAP
 from Extracting import ps1_stack, ps1_skycells
 
@@ -858,19 +858,21 @@ def annotate_bright_stars(src: pd.DataFrame, stars: pd.DataFrame, out_to: float 
     diffraction-spike boxes (SPIKE_PA, SPIKE_WIDTH_ARCSEC, `spike_half_length`; ZTF is an equatorial Schmidt, so the
     spikes sit at fixed position angles on the sky); `bright_star_masked` combines them. A star within SELF_ARCSEC of the
     object is the object itself and does not count."""
-    cosd = np.cos(np.radians(np.median(src.dec.values)))
-    tree = cKDTree(np.c_[src.ra.values * cosd, src.dec.values])
+    from astropy.coordinates import angular_separation, position_angle
+    tree = cKDTree(sky_xyz(src.ra.values, src.dec.values))
     R = bright_star_radius(stars.phot_g_mean_mag.values); L = spike_half_length(stars.phot_g_mean_mag.values)
-    centres = np.c_[stars.ra.values * cosd, stars.dec.values]
     best = np.full(len(src), np.inf); spike = np.zeros(len(src), bool)
-    reach = np.maximum(1.1 * out_to * R, 1.05 * L) / 3600
-    for (ra0, dec0), r, l, hits in zip(stars[['ra', 'dec']].values, R, L, tree.query_ball_point(centres, reach)):
+    reach = chord(np.maximum(1.1 * out_to * R, 1.05 * L))
+    ra_r, dec_r = np.radians(src.ra.values), np.radians(src.dec.values)
+    for (ra0, dec0), r, l, hits in zip(stars[['ra', 'dec']].values, R, L,
+                                       tree.query_ball_point(sky_xyz(stars.ra.values, stars.dec.values), reach)):
         if not hits:
             continue
         hits = np.asarray(hits)
-        dx = (src.ra.values[hits] - ra0) * np.cos(np.radians(dec0)) * 3600           # east, arcsec
-        dy = (src.dec.values[hits] - dec0) * 3600                                    # north
-        sep = np.hypot(dx, dy)
+        lon0, lat0 = np.radians(ra0), np.radians(dec0)                               # exact separation and position angle
+        sep = np.degrees(angular_separation(lon0, lat0, ra_r[hits], dec_r[hits])) * 3600
+        pa_obj = np.asarray(position_angle(lon0, lat0, ra_r[hits], dec_r[hits]), float)
+        dx, dy = sep * np.sin(pa_obj), sep * np.cos(pa_obj)                          # east, north (arcsec)
         own = sep < SELF_ARCSEC
         d = np.where(own, np.inf, sep / r)
         np.minimum.at(best, hits, np.where(d <= out_to, d, np.inf))
@@ -1246,18 +1248,13 @@ def catalog_flowchart(src: pd.DataFrame, cuts: Cuts = Cuts(), table: Optional[pd
 # ----------------------------------------------------------------------------------------------- driver
 
 def annotate_neighbours(src: pd.DataFrame) -> pd.DataFrame:
-    """Every object's relation to the other objects of either survey -- every ZTF object at its position and every PS1
-    object at its own position, matched or not, whatever it does in the pipeline; the object's own ZTF and PS1
-    entries are never counted:
-
-      `nearest_other_arcsec`   distance to the nearest other object (NaN beyond 60");
-      `inside_brighter_kron`   inside the Kron aperture of a brighter object (PS1's KronRad, or our ZTF aperture): the
-                               light there belongs to that object (a galaxy's outskirts).
-
-    An object's magnitude is its brightest PSF magnitude in any band of either survey; a Kron radius is the largest
-    finite one over the bands."""
-    cosd = np.cos(np.radians(np.median(src.dec.values)))
-    pos = np.c_[src.ra.values * cosd, src.dec.values]
+    """`inside_brighter_kron`: inside the Kron aperture of a brighter object (PS1's KronRad, or our ZTF aperture) of
+    either survey -- every ZTF object at its position and every PS1 object at its own position, matched or not,
+    whatever it does in the pipeline; the object's own entries never count. The light there belongs to that object (a
+    galaxy's outskirts). The distance to the nearest other object, `nearest_other_arcsec`, comes from the builder
+    (`field_tables.nearest_other`). An object's magnitude is its brightest PSF magnitude in any band of either survey;
+    a Kron radius is the largest finite one over the bands. Distances are exact angles (`sky_xyz` trees)."""
+    pos = sky_xyz(src.ra.values, src.dec.values)
     ztf_rows, ps1_rows = np.flatnonzero(src.ztf_idx.values >= 0), np.flatnonzero(src.ps1_idx.values >= 0)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', RuntimeWarning)                                   # all-NaN rows
@@ -1267,24 +1264,19 @@ def annotate_neighbours(src: pd.DataFrame) -> pd.DataFrame:
         p_rad = np.nanmax(np.c_[[src[f'{b}_ps1_kron_rad'].values for b in BANDS]].T, axis=1)
         own_mag = np.nanmin(np.c_[z_mag, p_mag], axis=1)
     owner = np.r_[ztf_rows, ps1_rows]                                                   # the object each entry belongs to
-    entries = np.r_[pos[ztf_rows], np.c_[src.ps1_ra.values[ps1_rows] * cosd, src.ps1_dec.values[ps1_rows]]]
+    entries = np.r_[pos[ztf_rows], sky_xyz(src.ps1_ra.values[ps1_rows], src.ps1_dec.values[ps1_rows])]
     e_mag, e_rad = np.r_[z_mag[ztf_rows], p_mag[ps1_rows]], np.r_[z_rad[ztf_rows], p_rad[ps1_rows]]
-    tree = cKDTree(entries)
-    dist, k = tree.query(pos, k=3, distance_upper_bound=60 / 3600)                       # up to two entries are the object's own
-    own = owner[np.clip(k, 0, len(owner) - 1)] == np.arange(len(src))[:, None]
-    nearest = np.where(own | ~np.isfinite(dist), np.inf, dist).min(axis=1)
     # inside a brighter entry's Kron aperture: every object within each aperture's radius (searched out to
     # KRON_REACH_ARCSEC: a larger PS1 KronRad is a deblending accident), as one flat pair list
     in_kron = np.zeros(len(src), bool)
     with_rad = np.flatnonzero(np.isfinite(e_rad))
-    hits = cKDTree(pos).query_ball_point(entries[with_rad], np.minimum(e_rad[with_rad], KRON_REACH_ARCSEC) / 3600, return_sorted=False)
+    hits = cKDTree(pos).query_ball_point(entries[with_rad], chord(np.minimum(e_rad[with_rad], KRON_REACH_ARCSEC)), return_sorted=False)
     n_hits = np.fromiter((len(h) for h in hits), int, len(hits))
     e = np.repeat(with_rad, n_hits)                                                     # the entry of each pair
     i = np.fromiter((j for h in hits for j in h), int, int(n_hits.sum()))               # the object inside it
     inside = (owner[e] != i) & (e_mag[e] < own_mag[i])
     in_kron[i[inside]] = True
-    return _attach(src, {'nearest_other_arcsec': np.where(np.isfinite(nearest), nearest * 3600, np.nan).astype(np.float32),
-                         'inside_brighter_kron': in_kron})
+    return _attach(src, {'inside_brighter_kron': in_kron})
 
 
 def field_box(src: pd.DataFrame, pad_deg: float = 0.4) -> Tuple[float, float, float, float]:
@@ -1298,8 +1290,8 @@ def field_box(src: pd.DataFrame, pad_deg: float = 0.4) -> Tuple[float, float, fl
 
 def prepare_field(field_id: int, data_dir: Optional[str] = None) -> pd.DataFrame:
     """The parts that do not depend on the photometry choices: the merged table (`load_merged`) with its Gaia match, its PS1 skycell
-    (and whether that is one of MAST's bad polar skycells), and its distance to the nearest bright star and to its
-    nearest other-survey neighbours."""
+    (and whether that is one of MAST's bad polar skycells), its distance to the nearest bright star, and whether it
+    sits inside a brighter object's Kron aperture. `nearest_other_arcsec` comes with the merged table."""
     data_dir = data_dir or get_data_path()
     base = load_merged(field_id, data_dir)
     stars = bright_stars(field_id, data_dir, box=field_box(base))
