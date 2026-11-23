@@ -44,6 +44,7 @@ Data/fields/<field>/
 | `ccd` | CCD measured in |
 | `qid` | quadrant measured in |
 | `nan_dist_px` | px to the nearest masked pixel |
+| `sky` | residual sky at the source, Jy/arcsec²: our 64″ background model there minus its median over the image (`residual_sky`) |
 | `zkron` | our Kron magnitude |
 | `zkron_err` | its error |
 | `zkron_r1` | Kron radius R1, arcsec |
@@ -117,6 +118,7 @@ Every ZTF object with its PS1 match, then every unmatched PS1 object. Values as 
 | `{b}_ztf_psf_err` | N (DAOPhot `sigmag`) |
 | `{b}_ztf_snr` | N (DAOPhot `snr`) |
 | `{b}_ztf_sharp` | N (DAOPhot `sharp`) |
+| `{b}_ztf_sky` | residual sky at the detection, Jy/arcsec² (`ztf_{b}` `sky`) |
 | `{b}_ztf_chi` | N (DAOPhot `chi`: PSF-fit residual RMS over the RMS expected from the noise model, inside the fitting radius) |
 | `{b}_ztf_flags` | N (DAOPhot `flags`) |
 | `{b}_ztf_kron`, `{b}_ztf_kron_err` | our Kron magnitude and error |

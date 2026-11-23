@@ -104,7 +104,12 @@ def band_catalog(field: int, ccd: int, qid: int, band: str, data_dir: Optional[s
     out_dir = os.path.join(field_dir(field, data_dir), 'quadrants')
     path = os.path.join(out_dir, f'ztf_{quadrant_name(ccd, qid)}_{band}.parquet')
     if os.path.exists(path) and not overwrite:
-        return pd.read_parquet(path)
+        cat = pd.read_parquet(path)
+        if 'sky' not in cat:                                  # a cache from before the residual sky: add it, keep the rest
+            im = load_refimg(refimg_path(os.path.join(data_dir, 'ztf_data'), field, ccd, qid, band))
+            cat['sky'] = residual_sky(im, cat.x.values, cat.y.values)
+            cat.to_parquet(path + '.part'); os.replace(path + '.part', path)
+        return cat
     ztf_dir = os.path.join(data_dir, 'ztf_data')
     for product in require:
         if not os.path.exists(refimg_path(ztf_dir, field, ccd, qid, band, product)):
@@ -125,6 +130,7 @@ def band_catalog(field: int, ccd: int, qid: int, band: str, data_dir: Optional[s
                            f'(MAGZP {magzp} vs {im.zero_point}, NMATCHES {hdul_nmatches} vs {im.header.get("NMATCHES")})')
     xi, yi = np.clip(np.round(cat.x.values - 1).astype(int), 0, im.shape[1] - 1), np.clip(np.round(cat.y.values - 1).astype(int), 0, im.shape[0] - 1)
     cat['nan_dist_px'] = distance_transform_edt(~im.bad)[yi, xi]              # distance to the nearest masked pixel
+    cat['sky'] = residual_sky(im, cat.x.values, cat.y.values)
     if with_kron:
         frame = kron.prepare(im, cat.ra.values, cat.dec.values)
         kron.moment_floor(frame, np.nan_to_num(cat.snr.values, nan=0.0))
@@ -136,6 +142,19 @@ def band_catalog(field: int, ccd: int, qid: int, band: str, data_dir: Optional[s
     os.makedirs(out_dir, exist_ok=True)
     cat.to_parquet(path)
     return cat
+
+
+def residual_sky(im, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Residual sky at each (1-based) pixel position, Jy/arcsec^2 (PS1's `sky` units): the background model
+    (`kron.background`, a 64" sep mesh) there minus its median over the image's unmasked pixels, the constant fiducial
+    level ZTF adds to every reference. Large-scale excess light (halos, bright-star wings, scattered light) shows up
+    as a positive value; structure smaller than the mesh does not."""
+    back = kron.background(im).back()
+    ref = float(np.median(back[~im.bad]))
+    xi = np.clip(np.round(np.asarray(x) - 1).astype(int), 0, im.shape[1] - 1)
+    yi = np.clip(np.round(np.asarray(y) - 1).astype(int), 0, im.shape[0] - 1)
+    jy_per_dn = 3631.0 * 10 ** (-0.4 * im.zero_point)
+    return ((back[yi, xi] - ref) * jy_per_dn / im.pixel_scale ** 2).astype(np.float32)
 
 
 # ----------------------------------------------------------------------------------------------- per band, per field
@@ -455,6 +474,7 @@ def merge_tables(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
             f'{b}_ztf_maglim': image('maglim', f'{b}_maglim', np.float32),
             f'{b}_ztf_psf': take('mag'), f'{b}_ztf_psf_err': take('magerr'), f'{b}_ztf_snr': take('snr'),
             f'{b}_ztf_sharp': take('sharp').astype(np.float32), f'{b}_ztf_chi': take('chi').astype(np.float32),
+            f'{b}_ztf_sky': take('sky').astype(np.float32),
             f'{b}_ztf_flags': np.nan_to_num(take('flags'), nan=0).astype(np.int16),
             f'{b}_ztf_kron': take('zkron'), f'{b}_ztf_kron_err': take('zkron_err'),
             f'{b}_ztf_kron_masked': take('zkron_masked').astype(np.float32), f'{b}_ztf_kron_rap': take('zkron_rap').astype(np.float32),

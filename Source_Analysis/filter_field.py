@@ -9,7 +9,7 @@ unmatched PS1 object), and every band of it is judged in the same order, each st
   1. quality (`usable_sides`): each survey's side of the band passes its quality checks or is X, unusable for a
      measurement or a limit. ZTF (`ztf_checks`): outside every Gaia G < 16 star's mask (the circle `bright_star_radius`
      and four diffraction-spike boxes `spike_half_length`, calibrated on ZTF's images), the image covers the
-     position, DAOPhot flags = 0, DAOPhot chi <= `ztf_chi_max`, NAN_RADIUS_PX clear
+     position, DAOPhot flags = 0, DAOPhot chi <= `ztf_chi_max`, residual sky <= `ztf_sky_max`, NAN_RADIUS_PX clear
      of masked pixels (at the detection, or at the PS1 position for a non-detection) and, for extended objects, a ZTF
      Kron aperture at most KRON_MAX_MASKED masked. PS1 (`ps1_checks`): not one of MAST's mis-registered polar
      skycells (`ps1_skycells`; with or without a PS1 object); without a PS1 object, the DR2 catalog covering the
@@ -121,6 +121,7 @@ class Cuts:
     """The optional cuts of the pipeline. The defaults are the full pipeline; None (or False) turns a cut off."""
     bright_star_mask: bool = True             # a ZTF side inside a Gaia G < BRIGHT_STAR_G_MAX star's mask circle or spike boxes is X
     ztf_chi_max: Optional[float] = 6.0        # a ZTF detection whose DAOPhot chi exceeds this is X (ZTF recommends chi > 4 as bad for single epochs)
+    ztf_sky_max: Optional[float] = 1e-7       # a ZTF detection on residual sky above this (Jy/arcsec^2, PS1's threshold) is X
     sharp_max: Optional[float] = 0.5          # drop objects whose S/N^2-weighted DAOPhot |sharp| exceeds this
     sharp_point_only: bool = True             # ... point sources only: extended objects are broad by nature
     ps1_sky_max: Optional[float] = 1e-7       # a PS1 band with residual sky above this (Jy/arcsec^2) is untrustworthy
@@ -134,7 +135,7 @@ class Cuts:
         return replace(self, **changes)
 
 
-NO_CUTS = Cuts(bright_star_mask=False, ztf_chi_max=None, sharp_max=None, sharp_point_only=False, ps1_sky_max=None, ps1_min_nframes=None, isolation_arcsec=None,
+NO_CUTS = Cuts(bright_star_mask=False, ztf_chi_max=None, ztf_sky_max=None, sharp_max=None, sharp_point_only=False, ps1_sky_max=None, ps1_min_nframes=None, isolation_arcsec=None,
                neighbour_kron=False, snr_keep=None, envelope_clip_mad=None)
 
 
@@ -289,7 +290,9 @@ def ztf_checks(src: pd.DataFrame, b: str, point: np.ndarray, cuts: Cuts = Cuts()
     first the position outside every bright star's mask: ZTF's data there (detections, limits) belong to the star's
     halo or spikes. PS1 judges its own side near stars with its spike and star-core flags (`ps1_checks`). With
     `cuts.ztf_chi_max`, a detection's DAOPhot chi (PSF-fit residual RMS over the expected) at most that, for point
-    sources and extended objects alike: above it the PSF fit failed (galaxy shreds, blends, bleed columns)."""
+    sources and extended objects alike: above it the PSF fit failed (galaxy shreds, blends, bleed columns). With
+    `cuts.ztf_sky_max`, a detection's residual sky (`field_tables.residual_sky`) at most that: above it the detection
+    sits on large-scale excess light (a halo, a bright star's wing, scattered light), as PS1's `sky` cut judges PS1's side."""
     det = ztf_detected(src, b)
     clear = src[f'{b}_ztf_nan_dist'].values > NAN_RADIUS_PX                           # the detection's image, or the limit's
     kron_ok = src[f'{b}_ztf_kron_masked'].values <= KRON_MAX_MASKED
@@ -298,6 +301,8 @@ def ztf_checks(src: pd.DataFrame, b: str, point: np.ndarray, cuts: Cuts = Cuts()
             ('ZTF: DAOPhot flags = 0', ~det | (src[f'{b}_ztf_flags'].values == 0)),
             *([(f'ZTF: DAOPhot chi <= {cuts.ztf_chi_max:g}', ~det | ~(src[f'{b}_ztf_chi'].values > cuts.ztf_chi_max))]
               if cuts.ztf_chi_max is not None else []),
+            *([(f'ZTF: residual sky <= {cuts.ztf_sky_max:g}', ~det | ~(src[f'{b}_ztf_sky'].values > cuts.ztf_sky_max))]
+              if cuts.ztf_sky_max is not None else []),
             (f'ZTF: > {NAN_RADIUS_PX} px from a masked pixel', clear),
             (f'extended: ZTF Kron aperture <= {100 * KRON_MAX_MASKED:.0f}% masked', ~det | point | kron_ok)]
 

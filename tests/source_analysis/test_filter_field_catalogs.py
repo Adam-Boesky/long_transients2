@@ -29,7 +29,7 @@ def object_row(ztf: str, ps1: str, n_stack_detections: int = 3) -> dict:
         z = {'det': False, 'snr': np.nan, 'flags': 0, 'covered': True, **ZTF[zc]}
         flux, err, flag, flag2, qf = PS1[pc]
         meas = np.isfinite(flux)
-        r.update({f'{b}_ztf_snr': z['snr'], f'{b}_ztf_flags': z['flags'], f'{b}_ztf_sharp': z.get('sharp', 0.0), f'{b}_ztf_chi': z.get('chi', 1.0),
+        r.update({f'{b}_ztf_snr': z['snr'], f'{b}_ztf_flags': z['flags'], f'{b}_ztf_sharp': z.get('sharp', 0.0), f'{b}_ztf_chi': z.get('chi', 1.0), f'{b}_ztf_sky': z.get('sky', 0.0),
                   f'{b}_ztf_covered': z['covered'], f'{b}_ztf_nan_dist': 20.0, f'{b}_ztf_kron_masked': 0.0,
                   f'{b}_ztf_psf': 20.0 if z['det'] else np.nan, f'{b}_ztf_psf_err': 0.1, f'{b}_ztf_kron': np.nan,
                   f'{b}_ztf_kron_err': np.nan, f'{b}_ztf_kron_rap': np.nan, f'{b}_ps1_kron_rad': np.nan, f'{b}_ztf_maglim': 21.0,
@@ -521,3 +521,12 @@ def test_a_ztf_detection_with_a_failed_psf_fit_is_unusable_point_source_or_not()
         ok = dict(ff.ztf_checks(src, 'r', np.full(2, point), ff.Cuts()))['ZTF: DAOPhot chi <= 6']
         assert list(ok) == [True, False]
     assert not any('chi' in label for label, _ in ff.ztf_checks(src, 'r', np.ones(2, bool), OFF))
+
+
+def test_a_ztf_detection_on_residual_sky_above_ps1s_threshold_is_unusable():
+    rows = {'clean': object_row('DDD', '---'), 'on a halo in g': object_row('DDD', '---')}
+    src = pd.DataFrame(list(rows.values()), index=list(rows))
+    src.loc['on a halo in g', 'g_ztf_sky'] = 3e-7
+    ok = dict(ff.ztf_checks(src, 'g', np.ones(2, bool), ff.Cuts()))['ZTF: residual sky <= 1e-07']
+    assert list(ok) == [True, False]
+    assert not any('sky' in label for label, _ in ff.ztf_checks(src, 'g', np.ones(2, bool), OFF))
