@@ -117,6 +117,7 @@ Every ZTF object with its PS1 match, then every unmatched PS1 object. Values as 
 | `{b}_ztf_psf_err` | N (DAOPhot `sigmag`) |
 | `{b}_ztf_snr` | N (DAOPhot `snr`) |
 | `{b}_ztf_sharp` | N (DAOPhot `sharp`) |
+| `{b}_ztf_chi` | N (DAOPhot `chi`: PSF-fit residual RMS over the RMS expected from the noise model, inside the fitting radius) |
 | `{b}_ztf_flags` | N (DAOPhot `flags`) |
 | `{b}_ztf_kron`, `{b}_ztf_kron_err` | our Kron magnitude and error |
 | `{b}_ztf_kron_masked` | masked fraction of the Kron aperture |

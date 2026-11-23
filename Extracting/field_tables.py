@@ -454,7 +454,8 @@ def merge_tables(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
             f'{b}_ztf_nan_dist': image('nan_dist_px', f'{b}_nan_dist_px', np.float32),
             f'{b}_ztf_maglim': image('maglim', f'{b}_maglim', np.float32),
             f'{b}_ztf_psf': take('mag'), f'{b}_ztf_psf_err': take('magerr'), f'{b}_ztf_snr': take('snr'),
-            f'{b}_ztf_sharp': take('sharp').astype(np.float32), f'{b}_ztf_flags': np.nan_to_num(take('flags'), nan=0).astype(np.int16),
+            f'{b}_ztf_sharp': take('sharp').astype(np.float32), f'{b}_ztf_chi': take('chi').astype(np.float32),
+            f'{b}_ztf_flags': np.nan_to_num(take('flags'), nan=0).astype(np.int16),
             f'{b}_ztf_kron': take('zkron'), f'{b}_ztf_kron_err': take('zkron_err'),
             f'{b}_ztf_kron_masked': take('zkron_masked').astype(np.float32), f'{b}_ztf_kron_rap': take('zkron_rap').astype(np.float32),
         })
