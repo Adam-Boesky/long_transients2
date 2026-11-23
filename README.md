@@ -35,7 +35,7 @@ The quality checks (step 1), each answering "is the data at this position sound?
 | | PS1 measured some object in the band within 1′ (without a PS1 object: its stack reaches the position) |
 | DAOPhot flags = 0 | stack nFrames ≥ 4 |
 | DAOPhot chi ≤ 6 (detections, point or extended: the PSF fit did not fail) | |
-| residual sky ≤ 1e-7 Jy/arcsec² (detections: our background model's excess there) | |
+| optional, off by default: residual sky ≤ `Cuts.ztf_sky_max` (detections: our background model's excess there) | |
 | > 5 px from a masked pixel (at the detection, or at the PS1 position for a limit) | residual sky ≤ 1e-7 |
 | extended objects: Kron aperture ≤ 10 % masked | not DEFECT, PEAK_ON_SPIKE, ON_SPIKE, ON_STARCORE, ON_BURNTOOL, SATSTAR, SATSTAR_PROFILE |
 | | measured in the band (a PS1 object with no row for the band tells us nothing) |

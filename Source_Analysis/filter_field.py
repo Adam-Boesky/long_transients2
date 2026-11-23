@@ -121,7 +121,7 @@ class Cuts:
     """The optional cuts of the pipeline. The defaults are the full pipeline; None (or False) turns a cut off."""
     bright_star_mask: bool = True             # a ZTF side inside a Gaia G < BRIGHT_STAR_G_MAX star's mask circle or spike boxes is X
     ztf_chi_max: Optional[float] = 6.0        # a ZTF detection whose DAOPhot chi exceeds this is X (ZTF recommends chi > 4 as bad for single epochs)
-    ztf_sky_max: Optional[float] = 1e-7       # a ZTF detection on residual sky above this (Jy/arcsec^2, PS1's threshold) is X
+    ztf_sky_max: Optional[float] = None       # a ZTF detection on residual sky above this (Jy/arcsec^2) is X; off: PS1's 1e-7 is ~1 DN of ZTF background-model noise
     sharp_max: Optional[float] = 0.5          # drop objects whose S/N^2-weighted DAOPhot |sharp| exceeds this
     sharp_point_only: bool = True             # ... point sources only: extended objects are broad by nature
     ps1_sky_max: Optional[float] = 1e-7       # a PS1 band with residual sky above this (Jy/arcsec^2) is untrustworthy

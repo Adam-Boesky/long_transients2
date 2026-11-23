@@ -523,10 +523,10 @@ def test_a_ztf_detection_with_a_failed_psf_fit_is_unusable_point_source_or_not()
     assert not any('chi' in label for label, _ in ff.ztf_checks(src, 'r', np.ones(2, bool), OFF))
 
 
-def test_a_ztf_detection_on_residual_sky_above_ps1s_threshold_is_unusable():
+def test_a_ztf_detection_on_residual_sky_above_the_threshold_is_unusable():
     rows = {'clean': object_row('DDD', '---'), 'on a halo in g': object_row('DDD', '---')}
     src = pd.DataFrame(list(rows.values()), index=list(rows))
     src.loc['on a halo in g', 'g_ztf_sky'] = 3e-7
-    ok = dict(ff.ztf_checks(src, 'g', np.ones(2, bool), ff.Cuts()))['ZTF: residual sky <= 1e-07']
+    ok = dict(ff.ztf_checks(src, 'g', np.ones(2, bool), ff.Cuts(ztf_sky_max=1e-7)))['ZTF: residual sky <= 1e-07']
     assert list(ok) == [True, False]
     assert not any('sky' in label for label, _ in ff.ztf_checks(src, 'g', np.ones(2, bool), OFF))
