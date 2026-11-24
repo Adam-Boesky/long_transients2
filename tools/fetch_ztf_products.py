@@ -5,7 +5,7 @@ feeds Cannon's at ~0.5 MB/s, so the only lever is more egress IPs: Cannon NATs e
 (holy7c, holy8a, ...) through its own address. Workers therefore cooperate through the shared
 filesystem rather than fixed shards: each claims one *field* at a time by creating
 `<data_dir>/fetch_logs/claims_<product>/field<6>/` (heartbeat-touched; a claim idle for
-STALE_MINUTES is taken over), and with `--one-per-ip` a worker whose egress IP is already served by a
+STALE_MINUTES, or whose owner's Slurm job has ended, is taken over), and with `--one-per-ip` a worker whose egress IP is already served by a
 live worker exits at once, so a job array can be oversubscribed across partitions safely.
 
 Progress lives on disk: a product is done when its file exists under `<data_dir>/field<6>/`, a 404 is
@@ -18,6 +18,7 @@ recorded in `fetch_logs/missing_<product>.txt`, and a rerun resumes wherever it 
 import argparse
 import os
 import socket
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -56,8 +57,32 @@ def read_missing(data_dir: str, product: str) -> set:
         return {line.strip() for line in f if line.strip()}
 
 
+SLURM_LIVE = {'PENDING', 'CONFIGURING', 'RUNNING', 'SUSPENDED', 'STOPPED', 'SIGNALING', 'RESIZING',
+              'REQUEUED', 'REQUEUE_HOLD', 'REQUEUE_FED'}
+
+
+def _owner_job_dead(path: str) -> bool:
+    """True if the lease's owner is a Slurm job that has ended. A job killed at its time limit never releases,
+    so without this the next link of a singleton chain sees a fresh lease and exits."""
+    try:
+        with open(os.path.join(path, 'owner')) as f:
+            job = f.read().split('@')[0].strip()
+    except OSError:
+        return False
+    if not job.isdigit():
+        return False
+    try:
+        r = subprocess.run(['squeue', '-h', '-j', job, '-o', '%T'], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if r.returncode != 0:   # purged from the controller -> "Invalid job id"; any other error: fall back to age
+        return 'Invalid job id' in r.stderr
+    return r.stdout.strip() not in SLURM_LIVE
+
+
 def _lease(path: str, owner: str = WORKER) -> bool:
-    """Atomically take `path` as a lease; a stale one (no heartbeat for STALE_MINUTES) is taken over."""
+    """Atomically take `path` as a lease; a stale one (no heartbeat for STALE_MINUTES, or its Slurm job ended)
+    is taken over."""
     try:
         os.mkdir(path)
     except FileExistsError:
@@ -65,9 +90,11 @@ def _lease(path: str, owner: str = WORKER) -> bool:
             age_min = (time.time() - os.stat(path).st_mtime) / 60.0
         except FileNotFoundError:
             return _lease(path, owner)
-        if age_min < STALE_MINUTES:
+        dead = _owner_job_dead(path)
+        if age_min < STALE_MINUTES and not dead:
             return False
-        print(f'FETCH_TAKEOVER stale lease {path} ({age_min:.0f} min)', flush=True)
+        why = 'owner job ended' if dead else f'{age_min:.0f} min'
+        print(f'FETCH_TAKEOVER stale lease {path} ({why})', flush=True)
     with open(os.path.join(path, 'owner'), 'w') as f:
         f.write(owner + '\n')
     os.utime(path)
