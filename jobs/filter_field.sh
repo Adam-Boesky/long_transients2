@@ -8,8 +8,8 @@
 #SBATCH -c 1
 #SBATCH --mem=48G
 #SBATCH -t 0-01:00
-#SBATCH -o /n/holystore01/LABS/berger_lab/Users/aboesky/long_transients2/logs/%x_%j.out
-#SBATCH -e /n/holystore01/LABS/berger_lab/Users/aboesky/long_transients2/logs/%x_%j.err
+#SBATCH -o /n/holystore01/LABS/berger_lab/Users/aboesky/long_transients2/logs/%x_%A_%a.out
+#SBATCH -e /n/holystore01/LABS/berger_lab/Users/aboesky/long_transients2/logs/%x_%A_%a.err
 set -uo pipefail
 source "${SLURM_SUBMIT_DIR:-.}/jobs/env.sh"
 
