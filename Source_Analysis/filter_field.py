@@ -11,40 +11,55 @@ unmatched PS1 object), and every band of it is judged in the same order, each st
      and four diffraction-spike boxes `spike_half_length`, calibrated on ZTF's images), the image covers the
      position, DAOPhot flags = 0, DAOPhot chi <= `ztf_chi_max`, NAN_RADIUS_PX clear
      of masked pixels (at the detection, or at the PS1 position for a non-detection) and, for extended objects, a ZTF
-     Kron aperture at most KRON_MAX_MASKED masked. PS1 (`ps1_checks`): not one of MAST's mis-registered polar
+     Kron aperture at most KRON_MAX_MASKED masked and, where the PSF S/N is at least SNR_MIN, a Kron magnitude. PS1 (`ps1_checks`): not one of MAST's mis-registered polar
      skycells (`ps1_skycells`; with or without a PS1 object); without a PS1 object, the DR2 catalog covering the
      position (MAST's missing-data boxes, its Dec -30 cut) and some PS1 object measured in the band within
      1' (its stack reaches the position; `field_tables.ps1_neighbourhood`); with one, per band: at least `ps1_min_nframes` stack input
      frames (PS1 runs its mixture-model outlier rejection only with more than 6 inputs, Waters et al. 2020), residual
      sky at most `ps1_sky_max`, none of the DEFECT / PEAK_ON_SPIKE / ON_SPIKE / ON_STARCORE / ON_BURNTOOL / SATSTAR /
-     SATSTAR_PROFILE flags (PS1_BAND_FLAGS), a measurement in the band (forced photometry counts) and psfQfPerfect >
-     PSF_QF_MIN;
+     SATSTAR_PROFILE flags (PS1_BAND_FLAGS), a measurement in the band (forced photometry counts), for an extended
+     object detected at PSF S/N >= SNR_MIN a Kron magnitude (`band_photometry`, the photometry it is judged by; a
+     fainter one without a Kron is sub-threshold and its limit stands in), psfQfPerfect >
+     PSF_QF_MIN, PSF-fit reduced chi^2 (psfChiSq) <= `ps1_chisq_max` and, with `ps1_require_primary`, a stack row
+     from the object's primary skycell;
   2. detection (`detection_status`): on a usable side, D a measurement at S/N >= SNR_MIN, L one below it (a ZTF
      detection under SNR_MIN, a PS1 measurement, forced fluxes <= 0 included), U nothing measured (no ZTF detection, no
-     PS1 object): the survey's limit stands in;
+     PS1 object): the survey's limit stands in. The measurement, its S/N and everything after it are the photometry
+     the object's morphology commits it to (`band_photometry`, `point_source`: PSF for a point source, Kron for an
+     extended object; the other kind is never read again);
   3. comparison and sorting: `COMPARISON` maps the (ZTF, PS1) pair to what the band compares, `{b}_cat`: 0 ZTF
      against PS1 (D, D); 1 ZTF against the PS1 limit (D with L or U; a forced PS1 measurement brighter than the limit
      is used instead); 2 PS1 against the ZTF limit (L or U with D); -1 nothing (an X, or neither side D). The object's
      catalog (`object_catalog`) is the kind its bands carry: at least two two-sided bands -> `in_both` (its one-sided
      bands are dropped); else at least two one-sided bands all of one kind -> `in_ztf` / `in_pstarr`; anything else is
-     not comparable (-1, `catalog_reason`) and leaves here. Each survey's limit is the quadrant's magnitude at which
-     its recovery of the other survey's detections falls to LIMIT_COMPLETENESS (`completeness_limits`: the reference
-     is the other survey's detections passing their own quality and confident checks in >= 2 bands and the Gaia cuts,
-     the population the one-sided candidates come from; each reference binned by the magnitude it compares,
-     `reference_magnitude`), never deeper than the survey's nominal depth (ZTF's MAGLIM; `ps1_stack.stack_depth` of the stack's
-     nFrames at the position);
+     not comparable (-1, `catalog_reason`) and leaves here. Each survey's limit is the magnitude at which it recovers
+     a fraction LIMIT_COMPLETENESS of point sources (`completeness_limits`). ZTF's follows from its image
+     (`ztf_recovery_mag`: the catalog's 5-sigma depth and the ratio of the real to the modelled pixel noise, from the
+     builder's depth columns). PS1's is read off its own injection-recovery test of the deep stack the band is judged
+     in (`ps1_stack.stack_recovery_mag`: the band row's skycell, else the skycell holding the position); it is NaN
+     where no stack exists in the band or its recovery never reaches LIMIT_COMPLETENESS (survey edge, crowding), and
+     such a band is uncovered by PS1 (`ps1_checks`): without a PS1 detection in it nothing is compared;
   4. confident (`real_checks`, object-wide): optionally a ZTF sharpness (`ztf_sharpness`) within
      `sharp_max` for point sources; for in_ztf and in_pstarr, optionally no other object of either survey within
      `isolation_arcsec` (`nearest_other_arcsec`, from the builder) nor inside a brighter object's Kron aperture (`neighbour_kron`): a
      one-sided object that close to another is most often a piece of the same light; for in_both and in_pstarr, PS1's
      own verdict on its detections: nStackDetections >= PS1_MIN_STACK_DETECTIONS and neither BAD_STACK nor
-     SUSPECT_STACK (for in_ztf the PS1 side is a limit and these only say the object is faint there);
+     SUSPECT_STACK (for in_ztf the PS1 side is a limit and these only say the object is faint there); for the one-sided
+     catalogs, optionally that the detecting survey's light is not diffuse (`diffuse_light`, ZTF's side for in_ztf,
+     PS1's for in_pstarr): PSF - Kron exceeding `diffuse_excess` by `diffuse_nsigma` in >= 2 measured bands is a
+     sheet of scattered light, not an object (a source the other survey cannot see at all is not a galaxy; in_both's
+     extended objects, seen by both, are left alone);
   5. population: no Gaia proper motion or parallax at 5 sigma;
-  6. calibrate, once, from what survives 4 and 5 in every catalog: the limits above and one KDE envelope per band from
-     the two-sided bands (`kde_envelopes`, optionally clipped of outliers first, `clip_envelope_sample`; fainter than
-     ENVELOPE_MONOTONE_FROM each +-1, 2, 3 sigma edge of a row is the most extreme value of that edge in it or any
-     brighter row, `widen_faint_rows`);
-  7. interesting: sigma of every compared band against the envelope (`annotate_sigma`; a limit band is clipped to the
+  6. calibrate, once, from what survives 4 and 5 in every catalog: the limits above and, per band, one KDE envelope
+     per morphology (MORPHOLOGIES: point sources' PSF dmag, extended objects' Kron dmag; `kde_envelopes` from each
+     population's two-sided bands, optionally clipped of outliers first, `clip_envelope_sample`: beyond
+     `envelope_clip_mad` MAD-sigma of the rolling median of dmag, measured on the envelope's own windows). One envelope for both
+     would be as narrow as the point sources that dominate it while a Kron dmag scatters several times more at the
+     faint end, so ordinary faint galaxies would reach 3 sigma and the clipping would throw their own tail out of the
+     sample. A row of the envelope with fewer than ENVELOPE_MIN_PER_ROW objects is not measured and takes the nearest
+     measured row; fainter than ENVELOPE_MONOTONE_FROM each +-1, 2, 3 sigma edge of a row is the most extreme value of
+     that edge in it or any brighter row (`widen_faint_rows`);
+  7. interesting: sigma of every compared band against the envelope of the object's morphology (`annotate_sigma`; a limit band is clipped to the
      direction its limit supports), |sigma| > SIGMA_BOUNDARY in at least two bands, at least two of them of the same
      sign; optionally (`snr_keep`, off by default) each measured side of a kept band at that S/N, the rule re-checked.
      Off, every candidate carries its per-band S/N and the website applies the threshold.
@@ -87,12 +102,12 @@ from Extracting import ps1_stack, ps1_skycells
 
 CATALOG = {0: 'in_both', 1: 'in_ztf', 2: 'in_pstarr'}
 NOT_COMPARABLE = 'not comparable'   # objects with no catalog (-1): fewer than two comparable bands, or of mixed kinds
-UNDETECTED = NOT_COMPARABLE         # the old name
 REASONS = ('fewer than two measured bands', 'no comparable band', 'one comparable band', 'one two-sided band', 'mixed one-sided kinds')
 SNR_MIN = 5.0                   # sorts each side into detected (D) or not (L): sets catalogs and comparisons
 SIGMA_BOUNDARY = 3.0
 PSF_KRON_CUT = 0.05             # literature point/extended cut on PSF - Kron (Chambers et al. 2016)
 PSF_KRON_NSIGMA = 3.0           # extended if the combined excess over the cut exceeds this many sigma
+MORPHOLOGIES = ('point', 'extended')   # the populations with their own dmag envelopes (`morphology`)
 KRON_MAX_MASKED = 0.10          # ZTF Kron aperture fraction masked (neighbours' basins, bad pixels) above which Kron is contaminated
 NAN_RADIUS_PX = 5               # a ZTF measurement or limit this close to a masked ZTF pixel is untrustworthy
 GAIA_MATCH_ARCSEC = 5.0
@@ -106,14 +121,17 @@ PS1_MIN_STACK_DETECTIONS = 2    # where PS1's side is a measurement (in_both, in
 BRIGHT_STAR_G_MAX = 16.0        # Gaia stars brighter than this get a mask circle and spike boxes
 SELF_ARCSEC = 1.0               # a mask star this close to an object is the object itself
 KRON_REACH_ARCSEC = 40.0        # Kron containment is searched out to this radius; real apertures reach ~30"
-SPIKE_PA = (0.0, 90.0, 30.0, 150.0)   # ZTF diffraction spikes: position angles (deg, N through E) of the four boxes
+SPIKE_PA = (0.0, 90.0, 30.0, 150.0)   # ZTF diffraction spikes: angles (deg, through E) of the four boxes from the detector columns (`ztf_column_pa`)
 SPIKE_WIDTH_ARCSEC = 12.0       # full width of a spike box
 SPIKE_GROWTH, SPIKE_ANCHOR_G = 1.15, 16.0   # spike half-length = R * SPIKE_GROWTH ** (SPIKE_ANCHOR_G - G): R at G = 16, ~4 R at G = 6
-ENVELOPE_CLIP_BIN = 0.5         # mag, the bins of the envelope-sample clipping
+ENVELOPE_MAG_GRID = np.arange(16, 24, 0.25)   # the envelope rows (mean magnitude); each row's window is +-ENVELOPE_HALF_WINDOW
+ENVELOPE_HALF_WINDOW = 0.5      # mag: a row's sample is every object within this of its magnitude (a top-hat window)
 LIMIT_COMPLETENESS = 0.9        # a survey's limit is where its recovery of the other survey's detections drops to this
-LIMIT_BIN = 0.25                # mag
+REC_LIMIT_COL = f'rec{round(100 * LIMIT_COMPLETENESS)}_limit'   # the limit columns' suffix, `limit_col`: {b}_ztf_rec90_limit
 ENVELOPE_MONOTONE_FROM = 20.0   # fainter than this, no envelope edge comes in from where a brighter row had it
+ENVELOPE_MIN_PER_ROW = 50       # an envelope row with fewer objects is not measured: it takes the nearest measured row
 ERR_FLOOR_MAG = 0.01            # calibration floor per survey (PS1 ubercal, zubercal: ~1%), added in quadrature
+MAG_SNR = 2.5 / np.log(10)      # S/N of a magnitude with error e is MAG_SNR / e (Kron magnitudes carry no flux S/N of their own)
 
 
 @dataclass(frozen=True)
@@ -121,21 +139,25 @@ class Cuts:
     """The optional cuts of the pipeline. The defaults are the full pipeline; None (or False) turns a cut off."""
     bright_star_mask: bool = True             # a ZTF side inside a Gaia G < BRIGHT_STAR_G_MAX star's mask circle or spike boxes is X
     ztf_chi_max: Optional[float] = 6.0        # a ZTF detection whose DAOPhot chi exceeds this is X (ZTF recommends chi > 4 as bad for single epochs)
+    ps1_chisq_max: Optional[float] = 36.0     # a PS1 band whose PSF-fit reduced chi^2 exceeds this is X (ztf_chi_max squared: DAOPhot chi ~ sqrt(chi^2_nu))
+    ps1_require_primary: bool = True          # a PS1 object with no stack row in its primary skycell (seen only in a neighbour's overlap) is X
     sharp_max: Optional[float] = 0.5          # drop objects whose S/N^2-weighted DAOPhot |sharp| exceeds this
     sharp_point_only: bool = True             # ... point sources only: extended objects are broad by nature
     ps1_sky_max: Optional[float] = 1e-7       # a PS1 band with residual sky above this (Jy/arcsec^2) is untrustworthy
     ps1_min_nframes: Optional[int] = 4        # a PS1 band from a stack of fewer input frames is untrustworthy
     isolation_arcsec: Optional[float] = 3.0   # drop in_ztf / in_pstarr objects with any other object this close
-    neighbour_kron: bool = True               # ... or inside a brighter object's Kron aperture (either survey)
+    neighbour_kron: bool = False              # ... or inside a brighter object's Kron aperture (either survey; off: over-strict for hosted sources)
+    diffuse_excess: Optional[float] = 0.5     # drop one-sided objects whose detecting survey's light is diffuse: PSF - Kron exceeds this (mag) ...
+    diffuse_nsigma: float = 3.0               # ... by this many sigma in >= 2 measured bands (the one band if only one has a Kron)
     snr_keep: Optional[float] = None          # optional last step: a candidate's band needs this S/N on every side it measures (off: the site filters on S/N)
-    envelope_clip_mad: Optional[float] = 5.0  # envelope sample clipped at this many MAD-sigma per ENVELOPE_CLIP_BIN
+    envelope_clip_mad: Optional[float] = 5.0  # envelope sample clipped at this many MAD-sigma of its rolling median (the envelope's own windows)
 
     def replace(self, **changes) -> 'Cuts':
         return replace(self, **changes)
 
 
-NO_CUTS = Cuts(bright_star_mask=False, ztf_chi_max=None, sharp_max=None, sharp_point_only=False, ps1_sky_max=None, ps1_min_nframes=None, isolation_arcsec=None,
-               neighbour_kron=False, snr_keep=None, envelope_clip_mad=None)
+NO_CUTS = Cuts(bright_star_mask=False, ztf_chi_max=None, ps1_chisq_max=None, ps1_require_primary=False, sharp_max=None, sharp_point_only=False, ps1_sky_max=None, ps1_min_nframes=None, isolation_arcsec=None,
+               neighbour_kron=False, diffuse_excess=None, snr_keep=None, envelope_clip_mad=None)
 
 
 # ----------------------------------------------------------------------------------------------- loading
@@ -199,51 +221,27 @@ def floor_snr(snr: np.ndarray) -> np.ndarray:
     return snr / np.sqrt(1.0 + (snr * ERR_FLOOR_MAG / 1.0857) ** 2)
 
 
-def ps1_nframes(src: pd.DataFrame, b: str) -> np.ndarray:
-    """PS1 stack input frames at each object in band b: its own `{b}_ps1_nFrames` where it has at least one, else the
-    local estimate `{b}_ps1_nframes_local`."""
-    own = src[f'{b}_ps1_nFrames'].values
-    return np.where(own >= 1, own, src[f'{b}_ps1_nframes_local'].values)
+def limit_col(survey: str, b: str) -> str:
+    """The column holding a survey's LIMIT_COMPLETENESS recovery limit in band b: `{b}_{survey}_rec90_limit` at 0.9."""
+    return f'{b}_{survey}_{REC_LIMIT_COL}'
 
 
-def ps1_depth(src: pd.DataFrame, b: str) -> np.ndarray:
-    """PS1's nominal depth at each object in band b (`ps1_stack.stack_depth` of `ps1_nframes`): a cap on its limit."""
-    return ps1_stack.stack_depth(ps1_nframes(src, b), b)
-
-
-def completeness_limit(mag: np.ndarray, recovered: np.ndarray, quad: np.ndarray, cap: Dict[Tuple[int, int], float],
-                       completeness: float = LIMIT_COMPLETENESS, step: float = LIMIT_BIN, min_per_bin: int = 20,
-                       min_per_quad: int = 200) -> Dict[Tuple[int, int], float]:
-    """One survey's detection limit per ZTF quadrant {(ccd, qid): mag}, from the other survey's detections as the
-    reference: the magnitude at which the fraction of reference objects (`mag`, the reference survey's magnitude)
-    that the survey also detects (`recovered`) falls to `completeness`, interpolated between `step` bins. The reference
-    must be clean: spurious reference detections are never recovered and read as incompleteness (raw ZTF detections
-    have a ~10% floor of them at every magnitude). A quadrant with fewer than `min_per_quad` reference objects, or
-    without a crossing, takes the field's value; where the field's reference runs out (fewer than `min_per_bin` per
-    bin) while still above `completeness`, the limit is the edge of the last populated bin, since completeness is
-    unknown beyond it. No quadrant goes deeper than its `cap` (the survey's nominal depth: ZTF's MAGLIM, PS1's stack
-    depth), which is ~1 mag deeper than where detection actually stops."""
-    ok = np.isfinite(mag)
-    mag, recovered, quad = mag[ok], recovered[ok], quad[ok]
-    edges = np.arange(16, 25 + step, step); mid = edges[:-1] + step / 2
-    def limit(sel, last_bin_if_no_crossing=False) -> float:
-        n = np.histogram(mag[sel], edges)[0]; d = np.histogram(mag[sel & recovered], edges)[0]
-        frac = np.where(n >= min_per_bin, d / np.maximum(n, 1), np.nan)
-        below = np.flatnonzero(np.isfinite(frac) & (frac < completeness) & (mid > 19))
-        if not len(below):
-            populated = np.flatnonzero(np.isfinite(frac) & (mid > 19))
-            return edges[populated[-1] + 1] if last_bin_if_no_crossing and len(populated) else np.nan
-        i = below[0]
-        if i == 0 or not (frac[i - 1] > completeness):       # no bin above the threshold before it (the 19 mag guard)
-            return mid[i]
-        return mid[i - 1] + (frac[i - 1] - completeness) / (frac[i - 1] - frac[i]) * step   # linear between the two bins
-    field_limit = limit(np.ones(len(mag), bool), last_bin_if_no_crossing=True)
-    out = {}
-    for q, c in cap.items():
-        sel = quad == (q[0] * 10 + q[1])
-        v = limit(sel) if sel.sum() >= min_per_quad else np.nan
-        out[q] = float(np.nanmin([v if np.isfinite(v) else field_limit, c]))
-    return out
+def ztf_recovery_mag(m5: np.ndarray, gpctsig: np.ndarray, medpunc: np.ndarray, completeness: float = LIMIT_COMPLETENESS,
+                     snr_min: float = SNR_MIN) -> np.ndarray:
+    """The magnitude at which a ZTF reference image detects a fraction `completeness` of point sources at S/N >= `snr_min`,
+    from the builder's depth columns: `m5`, the catalog's 5-sigma depth (median magnitude at 4.5 <= S/N <= 5.5), and
+    eta = `gpctsig` / `medpunc`, the image's real pixel scatter over the pipeline's modelled uncertainty (the catalog's
+    S/N overstates the true S/N by eta, since coadding correlates the noise the model leaves independent). A source of
+    true flux f at the threshold flux f_t has catalog S/N normal about snr_min * f / f_t with width eta, so
+    P(S/N >= snr_min) = Phi[(snr_min / eta)(f / f_t - 1)] and the completeness-p magnitude is
+    m_t - 2.5 log10(1 + z_p eta / snr_min), z_p = Phi^-1(p), with m_t = m5 + 2.5 log10(5 / snr_min). NaN where the
+    columns are, or where the requested completeness is not reached at any flux. Notebooks/recovery_completeness.ipynb
+    derives and checks this."""
+    m5, gpctsig, medpunc = (np.asarray(v, float) for v in (m5, gpctsig, medpunc))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        eta = gpctsig / medpunc
+        m_t = m5 + 2.5 * np.log10(5.0 / snr_min)
+        return m_t - 2.5 * np.log10(1 + norm.ppf(completeness) * eta / snr_min)
 
 
 # ----------------------------------------------------------------------------------------------- morphology
@@ -260,13 +258,63 @@ def extendedness(src: pd.DataFrame, b: str) -> np.ndarray:
     return np.where(den > 0, num / np.sqrt(np.where(den > 0, den, 1.0)), -np.inf)
 
 
+def _over_in_two_bands(S: np.ndarray, nsigma: float) -> np.ndarray:
+    """Per object, the statistic `S` (bands x objects; -inf unmeasured) exceeds `nsigma` in >= 2 measured bands, or in
+    the one band if only one is measured; False with none measured."""
+    n_over, n_meas = (S > nsigma).sum(axis=0), np.isfinite(S).sum(axis=0)
+    return (n_meas > 0) & (n_over >= np.minimum(2, n_meas))
+
+
+def diffuse_light(src: pd.DataFrame, side: str, cuts: Cuts = Cuts()) -> np.ndarray:
+    """One survey's light at the object is diffuse: (PSF - Kron - diffuse_excess) / sigma on that side ('ztf' or 'ps1')
+    exceeds diffuse_nsigma in >= 2 measured bands (the one band if only one has a Kron). The morphology statistic with a
+    larger offset, one survey at a time: on field 860 real galaxies (in_both's extended objects) centre on PS1 PSF - Kron
+    ~ 0.9 at r ~ 22 while the in_pstarr objects that are sheets of scattered light in the stacks (no single-epoch
+    detections, model half-light radii of 30-50") sit at 1.2-2; the cut takes the latter and, by construction, nothing
+    point-like. On ZTF's side it is the same test for symmetry (nothing in field 860's in_ztf reaches it: ZTF's 2" PSF
+    swallows most of a galaxy, and a neighbour-masked Kron aperture only makes Kron fainter). False without a Kron
+    anywhere. Off (`diffuse_excess` None): all False."""
+    if cuts.diffuse_excess is None:
+        return np.zeros(len(src), bool)
+    S = []
+    for b in BANDS:
+        excess = src[f'{b}_{side}_psf'].values - src[f'{b}_{side}_kron'].values - cuts.diffuse_excess
+        var = src[f'{b}_{side}_psf_err'].values ** 2 + src[f'{b}_{side}_kron_err'].values ** 2
+        ok = np.isfinite(excess) & (var > 0)
+        S.append(np.where(ok, excess / np.sqrt(np.where(ok, var, 1.0)), -np.inf))
+    return _over_in_two_bands(np.array(S), cuts.diffuse_nsigma)
+
+
+def morphology(src: pd.DataFrame) -> np.ndarray:
+    """'point' or 'extended' per object, from `point_source`."""
+    return np.where(src.point_source.values, MORPHOLOGIES[0], MORPHOLOGIES[1])
+
+
 def point_source(src: pd.DataFrame) -> np.ndarray:
     """One morphology per object: extended when `extendedness` exceeds PSF_KRON_NSIGMA in >= 2 of the measured bands
     (in the one band if only one is measured)."""
-    S = np.array([extendedness(src, b) for b in BANDS])
-    n_ext, n_meas = (S > PSF_KRON_NSIGMA).sum(axis=0), np.isfinite(S).sum(axis=0)
-    return ~(n_ext >= np.minimum(2, np.maximum(n_meas, 1)))
+    return ~_over_in_two_bands(np.array([extendedness(src, b) for b in BANDS]), PSF_KRON_NSIGMA)
 
+
+def band_photometry(src: pd.DataFrame, b: str, side: str, point: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(magnitude, error, S/N, measured) of band b on one side ('ztf' or 'ps1') in the photometry the object's
+    morphology commits it to: PSF for a point source, Kron for an extended object (`point`, else the `point_source`
+    column). Everything after the morphology reads photometry through here and never the other kind. The S/N is the
+    catalog's own for PSF (DAOPhot's `snr`; PS1's flux over its error, forced fluxes included, so it can be <= 0) and
+    MAG_SNR / error for Kron. `measured`: the side has that photometry (a point source on the PS1 side: any flux
+    measurement, a forced flux <= 0 included, so it still counts as sub-threshold). An extended object without a Kron
+    has no measurement on that side: where its PSF S/N is under SNR_MIN that is a sub-threshold source and the limit
+    stands in (`detection_status` L); where the PSF says a significant source is there, the side is unusable
+    (`ztf_checks`, `ps1_checks`: it cannot be judged, and is not a non-detection either)."""
+    point = src.point_source.values if point is None else np.asarray(point, bool)
+    psf, psf_err = src[f'{b}_{side}_psf'].values, src[f'{b}_{side}_psf_err'].values
+    kron, kron_err = src[f'{b}_{side}_kron'].values, src[f'{b}_{side}_kron_err'].values
+    psf_measured = src[f'{b}_ps1_meas'].values if side == 'ps1' else np.isfinite(psf)
+    kron_measured = np.isfinite(kron) & (kron_err > 0)
+    mag, err = np.where(point, psf, kron), np.where(point, psf_err, kron_err)
+    snr = np.where(point, src[f'{b}_{side}_snr'].values, MAG_SNR / np.where(kron_err > 0, kron_err, np.nan))
+    measured = np.where(point, psf_measured, kron_measured)
+    return mag, err, np.where(measured, snr, np.nan), measured
 
 
 # ----------------------------------------------------------------------------------------------- trust, detection, catalogs
@@ -289,7 +337,9 @@ def ztf_checks(src: pd.DataFrame, b: str, point: np.ndarray, cuts: Cuts = Cuts()
     first the position outside every bright star's mask: ZTF's data there (detections, limits) belong to the star's
     halo or spikes. PS1 judges its own side near stars with its spike and star-core flags (`ps1_checks`). With
     `cuts.ztf_chi_max`, a detection's DAOPhot chi (PSF-fit residual RMS over the expected) at most that, for point
-    sources and extended objects alike: above it the PSF fit failed (galaxy shreds, blends, bleed columns)."""
+    sources and extended objects alike: above it the PSF fit failed (galaxy shreds, blends, bleed columns). Last, an
+    extended object detected at PSF S/N >= SNR_MIN has a Kron magnitude (`band_photometry`), the magnitude it is
+    judged by; a fainter one without a Kron is a sub-threshold source and its limit stands in."""
     det = ztf_detected(src, b)
     clear = src[f'{b}_ztf_nan_dist'].values > NAN_RADIUS_PX                           # the detection's image, or the limit's
     kron_ok = src[f'{b}_ztf_kron_masked'].values <= KRON_MAX_MASKED
@@ -299,20 +349,31 @@ def ztf_checks(src: pd.DataFrame, b: str, point: np.ndarray, cuts: Cuts = Cuts()
             *([(f'ZTF: DAOPhot chi <= {cuts.ztf_chi_max:g}', ~det | ~(src[f'{b}_ztf_chi'].values > cuts.ztf_chi_max))]
               if cuts.ztf_chi_max is not None else []),
             (f'ZTF: > {NAN_RADIUS_PX} px from a masked pixel', clear),
-            (f'extended: ZTF Kron aperture <= {100 * KRON_MAX_MASKED:.0f}% masked', ~det | point | kron_ok)]
+            (f'extended: ZTF Kron aperture <= {100 * KRON_MAX_MASKED:.0f}% masked', ~det | point | kron_ok),
+            (f'extended: ZTF Kron measured for a detection at S/N >= {SNR_MIN:g}', ~det | band_photometry(src, b, 'ztf', point)[3] | ~(src[f'{b}_ztf_snr'].values >= SNR_MIN))]
 
 
-def ps1_checks(src: pd.DataFrame, b: str, cuts: Cuts = Cuts()) -> List[Tuple[str, np.ndarray]]:
-    """PS1's side of band b, (label, passes) in order; without a PS1 object only the three coverage checks apply
-    (skycell, catalog, objects nearby) and the PS1 limit stands in. First the band's row not from one of MAST's mis-registered polar skycells (`annotate_skycells`;
+def ps1_checks(src: pd.DataFrame, b: str, point: np.ndarray, cuts: Cuts = Cuts()) -> List[Tuple[str, np.ndarray]]:
+    """PS1's side of band b, (label, passes) in order; without a PS1 object only the four coverage checks apply
+    (skycell, catalog, objects nearby, stack depth) and the PS1 limit stands in. First the band's row not from one of MAST's mis-registered polar skycells (`annotate_skycells`;
     PS1 invalidated every magnitude there, and the detections and fluxes come from the same bad stacks, so a
     measurement from one is unusable and a missing PS1 object in one says nothing), and the position not in one of
     DR2's missing-catalog regions when there is no PS1 object (`annotate_skycells`), and, again without a PS1 object,
     the band's stack reaching the position (`{b}_ps1_covered`: a PS1 object measured in the band within
-    1', `field_tables.ps1_neighbourhood`; otherwise its limit cannot stand in). With `cuts.ps1_sky_max`, then a
+    1', `field_tables.ps1_neighbourhood`; otherwise its limit cannot stand in), and, unless PS1 detected the object
+    in the band, the band's deep stack recovering LIMIT_COMPLETENESS of injected sources at some magnitude
+    (`ps1_limit` finite: no stack in the band, or one that never reaches it, a partly exposed cell on the survey edge
+    or a crowded one in the Galactic plane, gives nothing a limit could stand in for). With `cuts.ps1_sky_max`, then a
     residual sky at most that (a band without a sky value passes); with
-    `cuts.ps1_min_nframes`, then a stack of at least that many input frames (nFrames 0, i.e. no stack input, fails)."""
+    `cuts.ps1_min_nframes`, then a stack of at least that many input frames (nFrames 0, i.e. no stack input, fails);
+    then, with `cuts.ps1_chisq_max`, a PSF-fit reduced chi^2 at most that (a band without one passes); last, with
+    `cuts.ps1_require_primary`, the object having a stack row in its primary skycell (`ps1_n_primary_rows`, rows with
+    infoFlag3 STACK_PRIMARY): PS1 notes an object can be missed in its primary skycell and appear only in a
+    neighbour's overlap; standard primary-only selections drop these, and at 18-21 mag in field 860 they are mostly
+    stack artifacts (no single-epoch detections, implausible colours, nothing in ZTF)."""
     none = src.ps1_idx.values < 0
+    _, _, snr, measured = band_photometry(src, b, 'ps1', point)
+    detected = ~none & (snr >= SNR_MIN)
     sky_max, min_nframes = cuts.ps1_sky_max, cuts.ps1_min_nframes
     sky = ([(f'PS1: residual sky <= {sky_max:g}', none | ~(src[f'{b}_ps1_sky'].values > sky_max))]
            if sky_max is not None else [])
@@ -320,10 +381,16 @@ def ps1_checks(src: pd.DataFrame, b: str, cuts: Cuts = Cuts()) -> List[Tuple[str
               if min_nframes is not None else [])
     stack = [('PS1: not in a flagged polar skycell', ~ps1_skycell_bad(src, b)),
              ('PS1: catalog covers the position', ~src.ps1_catalog_missing.values),
-             ("PS1: objects within 1' in the band", (~none) | src[f'{b}_ps1_covered'].values)]
+             ("PS1: objects within 1' in the band", (~none) | src[f'{b}_ps1_covered'].values),
+             (f'PS1: stack reaches {100 * LIMIT_COMPLETENESS:g}% at the position', detected | np.isfinite(ps1_limit(src, b)))]
     return (stack + sky + frames + [(label, none | ~_bits(src[f'{b}_ps1_{col}'].values, bit)) for label, col, bit in PS1_BAND_FLAGS]
             + [('PS1: measured in the band', none | src[f'{b}_ps1_meas'].values),
-               (f'PS1: psfQfPerfect > {PSF_QF_MIN}', none | (src[f'{b}_ps1_psfQfPerfect'].values > PSF_QF_MIN))])
+               (f'extended: PS1 Kron measured for a detection at S/N >= {SNR_MIN:g}', none | measured | ~(src[f'{b}_ps1_snr'].values >= SNR_MIN)),
+               (f'PS1: psfQfPerfect > {PSF_QF_MIN}', none | (src[f'{b}_ps1_psfQfPerfect'].values > PSF_QF_MIN))]
+            + ([(f'PS1: psfChiSq <= {cuts.ps1_chisq_max:g}', none | ~(src[f'{b}_ps1_psfChiSq'].values > cuts.ps1_chisq_max))]
+               if cuts.ps1_chisq_max is not None else [])
+            + ([('PS1: a row from the primary skycell', none | (src.ps1_n_primary_rows.values > 0))]
+               if cuts.ps1_require_primary else []))
 
 
 def _passes(checks: List[Tuple[str, np.ndarray]]) -> np.ndarray:
@@ -334,15 +401,17 @@ def usable_sides(src: pd.DataFrame, b: str, point: np.ndarray, cuts: Cuts = Cuts
     """Step 1, quality: (ZTF usable, PS1 usable) for band b per object, each side passing all of its checks
     (`ztf_checks`, `ps1_checks`). A side that fails is X in `band_status`: nothing on it, measurement or limit, is
     compared. A bad skycell makes the PS1 side unusable even without a PS1 object."""
-    return _passes(ztf_checks(src, b, point, cuts)), _passes(ps1_checks(src, b, cuts))
+    return _passes(ztf_checks(src, b, point, cuts)), _passes(ps1_checks(src, b, point, cuts))
 
 
-def detection_status(src: pd.DataFrame, b: str) -> Tuple[np.ndarray, np.ndarray]:
-    """Step 2, detection: (ZTF, PS1) status of band b per object, what each survey has there: 'D' a measurement at
-    S/N >= SNR_MIN, 'L' a measurement below it (a ZTF detection under SNR_MIN, a PS1 measurement, forced fluxes
-    included), 'U' nothing measured (no ZTF detection, or no PS1 object): the survey's limit stands in."""
-    z = np.where(~ztf_detected(src, b), 'U', np.where(src[f'{b}_ztf_snr'].values >= SNR_MIN, 'D', 'L'))
-    p = np.where(src.ps1_idx.values < 0, 'U', np.where(src[f'{b}_ps1_snr'].values >= SNR_MIN, 'D', 'L'))
+def detection_status(src: pd.DataFrame, b: str, point: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray]:
+    """Step 2, detection: (ZTF, PS1) status of band b per object, what each survey has there in the photometry the
+    morphology commits it to (`band_photometry`): 'D' a measurement at S/N >= SNR_MIN, 'L' a measurement below it (a
+    ZTF detection under SNR_MIN, a PS1 measurement, forced fluxes included), 'U' nothing measured (no ZTF detection,
+    or no PS1 object): the survey's limit stands in."""
+    z_snr, p_snr = band_photometry(src, b, 'ztf', point)[2], band_photometry(src, b, 'ps1', point)[2]
+    z = np.where(~ztf_detected(src, b), 'U', np.where(z_snr >= SNR_MIN, 'D', 'L'))
+    p = np.where(src.ps1_idx.values < 0, 'U', np.where(p_snr >= SNR_MIN, 'D', 'L'))
     return z, p
 
 
@@ -350,7 +419,7 @@ def band_status(src: pd.DataFrame, b: str, point: np.ndarray, cuts: Cuts = Cuts(
     """(ZTF, PS1) status of band b per object: the detection status (`detection_status`) on the usable sides
     (`usable_sides`), 'X' on the others."""
     z_ok, p_ok = usable_sides(src, b, point, cuts)
-    z, p = detection_status(src, b)
+    z, p = detection_status(src, b, point)
     return np.where(z_ok, z, 'X'), np.where(p_ok, p, 'X')
 
 
@@ -380,73 +449,48 @@ def object_catalog(cats: Dict[str, np.ndarray], n_measured: np.ndarray) -> Tuple
     return catalog, reason
 
 
-def completeness_references(src: pd.DataFrame, cuts: Cuts = Cuts()) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
-    """The reference populations of `completeness_limits`, per band: (ZTF detections that PS1's limit is measured
-    against, PS1 detections that ZTF's limit is measured against)."""
-    point = point_source(src)
-    mask = ~bright_star_masked(src) if cuts.bright_star_mask else np.ones(len(src), bool)   # ZTF's limit is unreliable there too
-    isolated = ~(src.nearest_other_arcsec.values <= cuts.isolation_arcsec) if cuts.isolation_arcsec is not None else np.ones(len(src), bool)
-    clear_of_kron = ~src.inside_brighter_kron.values if cuts.neighbour_kron else np.ones(len(src), bool)
-    pm_ok, plx_ok = gaia_population_ok(src)
-    population_ok = pm_ok & plx_ok
-    position_ok = mask & isolated & clear_of_kron & population_ok & ~ps1_skycell_bad(src)   # no PS1 data to recover with, or to be recovered
-    z_sharp_ok = ~sharpness_fails(src, point, cuts)
-    z_trust = {b: _passes(ztf_checks(src, b, point, cuts)) & ztf_detected(src, b) & (src[f'{b}_ztf_snr'].values >= SNR_MIN) for b in BANDS}
-    p_trust = {b: _passes(ps1_checks(src, b, cuts)) & src[f'{b}_ps1_detected'].values & (src[f'{b}_ps1_snr'].values >= SNR_MIN) for b in BANDS}
-    n_z, n_p = sum(z_trust[b].astype(int) for b in BANDS), sum(p_trust[b].astype(int) for b in BANDS)
-    stack_ok = (src.ps1_nStackDetections.values >= PS1_MIN_STACK_DETECTIONS) & ~_bits(src.ps1_qualityFlag.values, BAD_STACK | SUSPECT_STACK)
-    z_ref = {b: z_trust[b] & (n_z >= 2) & position_ok & z_sharp_ok for b in BANDS}                                   # PS1's limit: ZTF's detections
-    p_ref = {b: p_trust[b] & (n_p >= 2) & position_ok & stack_ok & src[f'{b}_ztf_covered'].values & (src[f'{b}_ztf_nan_dist'].values > NAN_RADIUS_PX) for b in BANDS}
-    return z_ref, p_ref
-
-
 def completeness_limits(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
-    """`{b}_ztf_limit` and `{b}_ps1_limit`: each survey's `completeness_limit` per quadrant of the band
-    (`{b}_ccd`/`{b}_qid`) against the other survey's detections that would reach the |sigma| step on their own side:
-    passing the reference side's quality and confident checks (`ztf_checks` / `ps1_checks`, the `real_checks` that
-    read only the reference survey, under `cuts`) at S/N >= SNR_MIN in at least two of its bands, and the Gaia
-    population cuts. That is the population the one-sided candidates are drawn from. Each reference object is binned
-    by the magnitude the pipeline would compare for it (`reference_magnitude`: Kron for extended objects, PSF
-    otherwise), so the limit is in the same mixed magnitude system as the objects judged against it. Checks that read
-    the recovering survey would remove recovered objects only and are left out. Recovery is a measurement of the band
-    by the other survey at the 1" match, i.e. what the pipeline would use in place of the limit: a ZTF DAOPhot
-    detection at any S/N, a PS1 detection or forced flux > 0 (a PS1 magnitude). Caps: ZTF's MAGLIM per quadrant,
-    PS1's published stack depth per quadrant and `ps1_depth` per object."""
-    z_refs, p_refs = completeness_references(src, cuts)
-    point = point_source(src)
+    """`{b}_ztf_rec90_limit` and `{b}_ps1_rec90_limit` (`limit_col`; the 90 follows LIMIT_COMPLETENESS): each survey's
+    magnitude of LIMIT_COMPLETENESS recovery in the band, at each object. ZTF's is `ztf_recovery_mag` of the image
+    the band is judged in (`{b}_ztf_mag_5sigma`, `{b}_ztf_gpctsig`,
+    `{b}_ztf_medpunc`: the detection's own image, else the covering one). PS1's is `ps1_stack.stack_recovery_mag` of
+    the deep stack the band is judged in (`ps1_stack_cell`), PS1's own injection test of that stack, NaN where there
+    is no such stack or it never reaches LIMIT_COMPLETENESS (`ps1_limit`; PS1 does not cover the band there,
+    `ps1_checks`). `cuts` is unused here."""
     cols = {}
     for b in BANDS:
-        ccd, qid = src[f'{b}_ccd'].values, src[f'{b}_qid'].values                     # the image the band is judged in
-        has = ccd >= 0
-        key = np.where(has, ccd.astype(np.int32) * 10 + qid, 0)
-        quads = sorted({(int(c), int(q)) for c, q in zip(ccd[has], qid[has])})
-        z_cap = {(k // 10, k % 10): float(v) for k, v in pd.Series(src[f'{b}_ztf_maglim'].values[has]).groupby(key[has]).first().items()}
-        p_cap = {q: ps1_stack.STACK_5SIG[b] for q in quads}
-        for survey, ref, rec, mag, cap in (('ps1', z_refs[b], np.isfinite(src[f'{b}_ps1_psf'].values), reference_magnitude(src, b, 'ztf', point), p_cap),
-                                           ('ztf', p_refs[b], ztf_detected(src, b), reference_magnitude(src, b, 'ps1', point), z_cap)):
-            lut = np.full(200, np.nan)
-            for (c, q), v in completeness_limit(np.where(ref, mag, np.nan), rec, key, cap).items():
-                lut[c * 10 + q] = v
-            lim = np.where(has, lut[key], np.nan)
-            cols[f'{b}_{survey}_limit'] = (np.fmin(lim, ps1_depth(src, b)) if survey == 'ps1' else lim).astype(np.float32)
+        cols[limit_col('ps1', b)] = ps1_limit(src, b).astype(np.float32)
+        cols[limit_col('ztf', b)] = ztf_recovery_mag(src[f'{b}_ztf_mag_5sigma'].values, src[f'{b}_ztf_gpctsig'].values, src[f'{b}_ztf_medpunc'].values).astype(np.float32)
     return _attach(src, cols)
 
 
-def reference_magnitude(src: pd.DataFrame, b: str, survey: str, point: np.ndarray) -> np.ndarray:
-    """A survey's magnitude of each object in band b as the pipeline would compare it: Kron for an extended object
-    where the survey has one, PSF otherwise."""
-    kron, psf = src[f'{b}_{survey}_kron'].values, src[f'{b}_{survey}_psf'].values
-    return np.where(~point & np.isfinite(kron), kron, psf)
+def ps1_limit(src: pd.DataFrame, b: str) -> np.ndarray:
+    """PS1's LIMIT_COMPLETENESS recovery magnitude in band b at each object: `{b}_ps1_rec90_limit` once
+    `completeness_limits` has run, else read off the stack now (`ps1_stack.stack_recovery_mag`)."""
+    if limit_col('ps1', b) in src:
+        return src[limit_col('ps1', b)].values
+    return ps1_stack.stack_recovery_mag(b, *ps1_stack_cell(src, b), LIMIT_COMPLETENESS)
+
+
+def ps1_stack_cell(src: pd.DataFrame, b: str) -> Tuple[np.ndarray, np.ndarray]:
+    """(projection cell, skycell) of the PS1 deep stack band b is judged in: the band row's (`{b}_ps1_projcell`,
+    `{b}_ps1_skycell`) where the object has one, else the skycell whose core holds the position
+    (`ps1_skycells.skycell_of`; -1 south of the tessellation)."""
+    proj, cell = src[f'{b}_ps1_projcell'].values.astype(np.int64).copy(), src[f'{b}_ps1_skycell'].values.astype(np.int64).copy()
+    need = proj < 0
+    if need.any():
+        proj[need], cell[need] = ps1_skycells.skycell_of(src.ra.values[need], src.dec.values[need])
+    return proj, cell
 
 
 def compared_magnitudes(src: pd.DataFrame, b: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """(ZTF magnitude, its error, PS1 magnitude, its error) that band b compares, from the stored magnitudes and the
-    band's flags: PSF or Kron by `{b}_use_psf`; on a limit side the survey's own sub-threshold measurement where it
-    is brighter than the limit (`{b}_ztf_use_meas`, `{b}_ps1_use_forced`), else the limit with zero error."""
-    psf, cat = src[f'{b}_use_psf'].values, src[f'{b}_cat'].values
-    pick = lambda side, kind: np.where(psf, src[f'{b}_{side}_psf{kind}'].values, src[f'{b}_{side}_kron{kind}'].values)
-    z, z_err, p, p_err = pick('ztf', ''), pick('ztf', '_err'), pick('ps1', ''), pick('ps1', '_err')
-    z_lim, p_lim = src[f'{b}_ztf_limit'].values, src[f'{b}_ps1_limit'].values
+    band's flags: the morphology's photometry (`band_photometry`: PSF for a point source, Kron for an extended
+    object); on a limit side the survey's own sub-threshold measurement where it is brighter than the limit
+    (`{b}_ztf_use_meas`, `{b}_ps1_use_forced`), else the limit with zero error."""
+    cat = src[f'{b}_cat'].values
+    z, z_err, _, _ = band_photometry(src, b, 'ztf'); p, p_err, _, _ = band_photometry(src, b, 'ps1')
+    z_lim, p_lim = src[limit_col('ztf', b)].values, src[limit_col('ps1', b)].values
     z_meas, forced = src[f'{b}_ztf_use_meas'].values, src[f'{b}_ps1_use_forced'].values
     z_out = np.where(cat == 2, np.where(z_meas, z, z_lim), z)
     z_err_out = np.where(cat == 2, np.where(z_meas, z_err, 0.0), z_err)
@@ -457,17 +501,17 @@ def compared_magnitudes(src: pd.DataFrame, b: str) -> Tuple[np.ndarray, np.ndarr
 
 def assign_catalogs(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
     """`catalog` per object; per band `{b}_ztf_status`, `{b}_ps1_status`, `{b}_cat` (the comparison), `point_source`
-    (one morphology per object), `{b}_extendedness`, `{b}_use_psf` (the band compares PSF magnitudes, else Kron) and
-    `{b}_ztf_use_meas` / `{b}_ps1_use_forced` (a limit side uses its own sub-threshold measurement); the magnitudes a
-    band compares follow from these (`compared_magnitudes`); `catalog` and `catalog_reason` from `object_catalog`. An in_both object keeps only its
+    (one morphology per object), `{b}_extendedness` and `{b}_ztf_use_meas` / `{b}_ps1_use_forced` (a limit side uses
+    its own sub-threshold measurement); the magnitudes a band compares follow from these and the morphology
+    (`compared_magnitudes`, `band_photometry`); `catalog` and `catalog_reason` from `object_catalog`. An in_both object keeps only its
     two-sided bands (`{b}_cat` 0); its one-sided bands are dropped (-1), as is every band of an object that is not
     comparable. On the undetected side of a one-sided band, either survey uses its own sub-threshold measurement
     where it has one brighter than its limit (`{b}_ps1_use_forced`, `{b}_ztf_use_meas` True; PS1's forced photometry,
-    a ZTF detection under SNR_MIN), else the limit (`{b}_ps1_limit`, `{b}_ztf_limit`). A measurement, however noisy, says more
+    a ZTF detection under SNR_MIN), else the limit (`{b}_ps1_rec90_limit`, `{b}_ztf_rec90_limit`). A measurement, however noisy, says more
     than a limit deeper than it.
 
-    Extended sources (`point_source`) use Kron magnitudes, point sources PSF; PSF where a side that needs one lacks a Kron.
-    `run_branch` drops objects left with fewer than two compared bands."""
+    Extended objects (`point_source`) are judged on Kron photometry throughout, point sources on PSF; a side without
+    the morphology's photometry is unmeasured there. `run_branch` drops objects left with fewer than two compared bands."""
     src = completeness_limits(src, cuts)
     point = point_source(src)
     status = {b: band_status(src, b, point, cuts) for b in BANDS}
@@ -479,15 +523,12 @@ def assign_catalogs(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
         cat = raw[b].copy()
         cat[(catalog == 0) & (cat > 0)] = -1                  # in_both: two-sided bands only
         cat[catalog < 0] = -1                                 # not comparable: nothing is compared
-        has_kron = ((cat == 2) | np.isfinite(src[f'{b}_ztf_kron'].values)) & ((cat == 1) | np.isfinite(src[f'{b}_ps1_kron'].values))
-        use_kron = (cat >= 0) & ~point & has_kron
-        z_mag = np.where(use_kron, src[f'{b}_ztf_kron'].values, src[f'{b}_ztf_psf'].values)
-        p_mag = np.where(use_kron, src[f'{b}_ps1_kron'].values, src[f'{b}_ps1_psf'].values)
-        forced = (cat == 1) & (p == 'L') & np.isfinite(p_mag) & (p_mag < src[f'{b}_ps1_limit'].values)
-        z_meas = (cat == 2) & (z == 'L') & np.isfinite(z_mag) & (z_mag < src[f'{b}_ztf_limit'].values)
+        z_mag, p_mag = band_photometry(src, b, 'ztf', point)[0], band_photometry(src, b, 'ps1', point)[0]
+        forced = (cat == 1) & (p == 'L') & np.isfinite(p_mag) & (p_mag < src[limit_col('ps1', b)].values)
+        z_meas = (cat == 2) & (z == 'L') & np.isfinite(z_mag) & (z_mag < src[limit_col('ztf', b)].values)
         cols.update({
             f'{b}_ztf_status': z, f'{b}_ps1_status': p, f'{b}_cat': cat,
-            f'{b}_extendedness': extendedness(src, b), f'{b}_use_psf': ~use_kron,
+            f'{b}_extendedness': extendedness(src, b),
             f'{b}_ztf_use_meas': z_meas, f'{b}_ps1_use_forced': forced,
         })
     return _attach(src, cols)
@@ -503,23 +544,39 @@ def envelope_tables(src: pd.DataFrame, use: Optional[Dict[str, np.ndarray]] = No
     return tabs
 
 
-def clip_envelope_sample(src: pd.DataFrame, use: Dict[str, np.ndarray], k_mad: float = 5.0,
-                         bin_mag: float = ENVELOPE_CLIP_BIN) -> Dict[str, np.ndarray]:
+def rolling_median_mad(mag: np.ndarray, d: np.ndarray, mag_grid: np.ndarray = ENVELOPE_MAG_GRID,
+                       half_window: float = ENVELOPE_HALF_WINDOW, min_per_row: int = ENVELOPE_MIN_PER_ROW) -> Tuple[np.ndarray, np.ndarray]:
+    """(median, MAD-sigma) of `d` at each grid magnitude over the objects within `half_window` of it: the envelope's own
+    rows and windows. A row with fewer than `min_per_row` objects takes the nearest measured row (`fill_unmeasured_rows`);
+    NaN everywhere when no row is measured."""
+    order = np.argsort(mag); mag_s, d_s = mag[order], d[order]
+    lo, hi = np.searchsorted(mag_s, mag_grid - half_window), np.searchsorted(mag_s, mag_grid + half_window, side='right')
+    rows = np.full((len(mag_grid), 2), np.nan)
+    for i, (a, c) in enumerate(zip(lo, hi)):
+        if c - a >= min_per_row:
+            med = np.median(d_s[a:c]); rows[i] = med, 1.4826 * np.median(np.abs(d_s[a:c] - med))
+    rows = fill_unmeasured_rows(rows)
+    return rows[:, 0], rows[:, 1]
+
+
+def clip_envelope_sample(src: pd.DataFrame, use: Dict[str, np.ndarray], k_mad: float = 5.0) -> Dict[str, np.ndarray]:
     """`use` ({band: rows}) restricted to its two-sided bands, less those whose dmag lies more than k_mad MAD-sigma
-    (1.4826 MAD) from the median dmag of their `bin_mag` bin of mean magnitude, repeated until none do. For a Gaussian,
+    from the median dmag at their magnitude, repeated until none do. The median and MAD-sigma are measured on the
+    envelope's own rows and windows (`rolling_median_mad`) and interpolated linearly in magnitude to each object, as
+    `Envelope_KDE.sigma` interpolates the envelope, so the threshold runs smoothly with magnitude. For a Gaussian,
     5 MAD-sigma removes ~6e-7 of the distribution, so the clip removes the stack-artefact, fragment and mismatch
     outliers (10-60 MAD-sigma out) that otherwise set the envelope's +-3 sigma edges, not the population's tails."""
     out = {}
     for b in BANDS:
         z, _, p, _ = compared_magnitudes(src, b)
         keep = use[b] & (src[f'{b}_cat'].values == 0) & np.isfinite(z) & np.isfinite(p)
-        bins, d = np.floor((z + p) / 2 / bin_mag), z - p
+        mag, d = (z + p) / 2, z - p
         while True:
             idx = np.flatnonzero(keep)
-            s = pd.DataFrame({'bin': bins[idx], 'd': d[idx]})
-            med = s.groupby('bin').d.transform('median').values
-            mad = 1.4826 * (s.d - med).abs().groupby(s.bin).transform('median').values
-            bad = np.abs(s.d.values - med) > k_mad * mad
+            med, mad = rolling_median_mad(mag[idx], d[idx])
+            if np.isnan(med).all():                              # too few objects for any row: nothing to clip against
+                break
+            bad = np.abs(d[idx] - np.interp(mag[idx], ENVELOPE_MAG_GRID, med)) > k_mad * np.interp(mag[idx], ENVELOPE_MAG_GRID, mad)
             if not bad.any():
                 break
             keep[idx[bad]] = False
@@ -545,13 +602,26 @@ def _move_edges(row: np.ndarray, dmag_grid: np.ndarray, old: np.ndarray, new: np
     return np.diff(np.interp(back, dmag_grid, cdf, left=0.0, right=1.0), prepend=0.0)
 
 
+def fill_unmeasured_rows(kde_ys: np.ndarray) -> np.ndarray:
+    """Every unmeasured row (all NaN) replaced by the nearest measured one: the previous measured row, or the first
+    measured row for the unmeasured rows before it. Unchanged when no row is measured."""
+    out = kde_ys.copy()
+    measured = np.flatnonzero(~np.isnan(out).all(axis=1))
+    if not len(measured):
+        return out
+    for i in range(len(out)):
+        if i not in measured:
+            out[i] = out[measured[measured < i].max() if (measured < i).any() else measured[0]]
+    return out
+
+
 def widen_faint_rows(kde_ys: np.ndarray, mag_grid: np.ndarray, dmag_grid: np.ndarray,
                      from_mag: float = ENVELOPE_MONOTONE_FROM, levels: Tuple[float, ...] = (3.0, 2.0, 1.0)) -> np.ndarray:
     """Fainter than `from_mag`, every +-1, 2, 3 sigma edge of a row is moved out to the most extreme value that edge
     takes in this or any brighter row (the upper edges to the running maximum, the lower to the running minimum); the
     median is left where it is. The scatter cannot shrink with magnitude; where it does, the faint windows hold too
-    few objects to sample the tails."""
-    out = kde_ys.copy()
+    few objects to sample the tails. Unmeasured rows are filled first (`fill_unmeasured_rows`)."""
+    out = fill_unmeasured_rows(kde_ys)
     lowest, highest = np.full(len(levels), np.inf), np.full(len(levels), -np.inf)
     for i in range(len(mag_grid)):
         lo, hi, med = _row_edges(out[i], dmag_grid, levels)
@@ -581,7 +651,7 @@ class Envelope_KDE:
         Returns a 1-D array if *percentile* is scalar, otherwise a 2-D array
         of shape (len(percentiles), len(mag_grid)).
         """
-        scalar = isinstance(percentile, (int, float))
+        scalar = isinstance(percentile, (int, float, np.floating))
         percentiles = [percentile] if scalar else list(percentile)
 
         cdf = np.cumsum(self.kde_ys, axis=1) / np.sum(self.kde_ys, axis=1, keepdims=True)
@@ -628,15 +698,16 @@ class Envelope_KDE:
         return z, capped
 
 
-def kde_envelopes(tabs: Dict[str, Table], mag_grid: np.ndarray = np.arange(16, 24, 0.25),
-                  dmag_grid: np.ndarray = np.linspace(-5, 5, 500), half_bin_width: float = 0.5,
+def kde_envelopes(tabs: Dict[str, Table], mag_grid: np.ndarray = ENVELOPE_MAG_GRID,
+                  dmag_grid: np.ndarray = np.linspace(-5, 5, 500), half_bin_width: float = ENVELOPE_HALF_WINDOW,
                   min_dmagerr: float = 0.01, n_sigma: float = 10.0, chunk: int = 200_000,
-                  monotone_from: Optional[float] = ENVELOPE_MONOTONE_FROM) -> Dict[str, Envelope_KDE]:
+                  monotone_from: Optional[float] = ENVELOPE_MONOTONE_FROM, min_per_row: int = ENVELOPE_MIN_PER_ROW) -> Dict[str, Envelope_KDE]:
     """Rolling KDE envelopes (a window of +-half_bin_width around each grid
     magnitude, a Gaussian per source with bandwidth = combined error, floored at min_dmagerr), computed fast: each
     source's Gaussian is evaluated once, only within +-n_sigma (beyond 10 sigma the weight is ~1e-23), and accumulated into sub-bins of the grid step; a
     window is the sum of the sub-bins it covers. Rows are normalised later (Envelope_KDE builds the CDF per row).
-    Fainter than `monotone_from` (None: off), rows are widened by `widen_faint_rows`. The grid starts at 16 mag: the
+    A row whose window holds fewer than `min_per_row` objects is unmeasured (NaN) and, with `monotone_from` set, takes
+    the nearest measured row; fainter than `monotone_from` (None: off), rows are widened by `widen_faint_rows`. The grid starts at 16 mag: the
     bright-star mask removes every Gaia G < 16 star, so brighter rows would sample galaxies, not the typical object;
     brighter sources are judged against the 16 mag row (`Envelope_KDE.sigma` clamps to the grid)."""
     step = mag_grid[1] - mag_grid[0]
@@ -669,29 +740,33 @@ def kde_envelopes(tabs: Dict[str, Table], mag_grid: np.ndarray = np.arange(16, 2
         counts = np.bincount(sub, minlength=n_sub)
         kde_ys = np.array([acc[i:i + per_window].sum(axis=0) for i in range(len(mag_grid))])
         n_win = np.array([counts[i:i + per_window].sum() for i in range(len(mag_grid))])
-        kde_ys[n_win <= 1] = np.nan
+        kde_ys[n_win < min_per_row] = np.nan
         if monotone_from is not None:
             kde_ys = widen_faint_rows(kde_ys, mag_grid, dmag_grid, monotone_from)
         envelopes[band] = Envelope_KDE(mag_grid, dmag_grid, kde_ys)
     return envelopes
 
 
-def annotate_sigma(src: pd.DataFrame, envelopes: Dict[str, Envelope_KDE]) -> pd.DataFrame:
+def annotate_sigma(src: pd.DataFrame, envelopes: Dict[str, Dict[str, Envelope_KDE]]) -> pd.DataFrame:
     """`{b}_dmag` and `{b}_sigma` (ZTF brighter = negative; ±SIGMA_CAP beyond what the grid resolves) for every row
-    with a usable band. A limit
+    with a usable band, each object against the envelope of its morphology (`envelopes[morphology][band]`). A limit
     bounds one direction only: against the PS1 limit (PS1 at least that faint) a band can only have brightened, so
     sigma is clipped at 0 from above, and against the ZTF limit only faded, clipped from below; a sub-threshold
     measurement standing in for a limit is a measurement and stays two-sided."""
     cols = {}
+    morph = morphology(src)
     for b in BANDS:
         z, _, p, _ = compared_magnitudes(src, b)
         dmag = z - p
-        sigma, capped = envelopes[b].sigma((z + p) / 2, dmag)
+        sigma = np.full(len(src), np.nan)
+        for m in MORPHOLOGIES:
+            rows = morph == m
+            sigma[rows] = envelopes[m][b].sigma(((z + p) / 2)[rows], dmag[rows])[0]
         cat = src[f'{b}_cat'].values
         against_ps1_limit = (cat == 1) & ~src[f'{b}_ps1_use_forced'].values
         against_ztf_limit = (cat == 2) & ~src[f'{b}_ztf_use_meas'].values
         sigma = np.where(against_ps1_limit, np.fmin(sigma, 0.0), np.where(against_ztf_limit, np.fmax(sigma, 0.0), sigma))
-        sigma[(cat < 0) | ~(p > 14.0)] = np.nan
+        sigma[cat < 0] = np.nan
         cols.update({f'{b}_dmag': dmag, f'{b}_sigma': sigma})
     return _attach(src, cols)
 
@@ -857,20 +932,54 @@ def spike_half_length(mag: np.ndarray) -> np.ndarray:
     return bright_star_radius(mag) * SPIKE_GROWTH ** (SPIKE_ANCHOR_G - mag)
 
 
+def ztf_column_pa(field_id: int, ra: np.ndarray, dec: np.ndarray, data_dir: Optional[str] = None) -> np.ndarray:
+    """Position angle (deg, N through E) of the ZTF detector columns (+y) at each position, from the WCS of the field's
+    reference quadrant the position lies deepest inside (the nearest one for a position off every quadrant). Zeros,
+    with a warning, when the field has no reference images."""
+    import glob
+    from astropy.coordinates import position_angle
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    ra, dec = np.asarray(ra, float), np.asarray(dec, float)
+    files = {}
+    for path in sorted(glob.glob(os.path.join(data_dir or get_data_path(), 'ztf_data', f'field{int(field_id):06d}', '*_refimg.fits'))):
+        files.setdefault(os.path.basename(path).split('_')[3:5].__str__(), path)     # one band per (ccd, quadrant)
+    if not files or not len(ra):
+        if not files:
+            warnings.warn(f'field {field_id}: no ZTF reference images, spike boxes left at sky position angles')
+        return np.zeros(len(ra))
+    wcs = [WCS(fits.getheader(p)) for p in files.values()]
+    depth = np.empty((len(wcs), len(ra)))
+    for k, w in enumerate(wcs):
+        x, y = w.world_to_pixel_values(ra, dec); ny, nx = w.array_shape
+        depth[k] = np.minimum.reduce([x, y, nx - 1 - x, ny - 1 - y])
+    which = np.argmax(depth, axis=0)
+    out = np.zeros(len(ra))
+    for k in np.unique(which):
+        i = which == k
+        x, y = wcs[k].world_to_pixel_values(ra[i], dec[i])
+        ra1, dec1 = wcs[k].pixel_to_world_values(x, y + 50)
+        out[i] = np.degrees(np.asarray(position_angle(np.radians(ra[i]), np.radians(dec[i]), np.radians(ra1), np.radians(dec1)), float))
+    return (out + 180) % 360 - 180
+
+
 def annotate_bright_stars(src: pd.DataFrame, stars: pd.DataFrame, out_to: float = 3.0) -> pd.DataFrame:
     """`bright_star_d_over_R`: distance to the nearest bright star in units of that star's mask radius
     (`bright_star_radius`); inf beyond `out_to` radii of every star. `in_star_spike`: inside one of a star's four
-    diffraction-spike boxes (SPIKE_PA, SPIKE_WIDTH_ARCSEC, `spike_half_length`; ZTF is an equatorial Schmidt, so the
-    spikes sit at fixed position angles on the sky); `bright_star_masked` combines them. A star within SELF_ARCSEC of the
-    object is the object itself and does not count."""
+    diffraction-spike boxes (SPIKE_PA, SPIKE_WIDTH_ARCSEC, `spike_half_length`); `bright_star_masked` combines them. The
+    spikes and saturation bleed trails are fixed to the detector, so SPIKE_PA is measured from the star's
+    `column_pa` (`ztf_column_pa`; 0, i.e. north, without one), which turns by ~dRA sin(dec) across a field from the
+    convergence of meridians (+-17 deg over field 860). A star within SELF_ARCSEC of the object is the object itself
+    and does not count."""
     from astropy.coordinates import angular_separation, position_angle
     tree = cKDTree(sky_xyz(src.ra.values, src.dec.values))
     R = bright_star_radius(stars.phot_g_mean_mag.values); L = spike_half_length(stars.phot_g_mean_mag.values)
+    cpa = stars.column_pa.values if 'column_pa' in stars else np.zeros(len(stars))
     best = np.full(len(src), np.inf); spike = np.zeros(len(src), bool)
     reach = chord(np.maximum(1.1 * out_to * R, 1.05 * L))
     ra_r, dec_r = np.radians(src.ra.values), np.radians(src.dec.values)
-    for (ra0, dec0), r, l, hits in zip(stars[['ra', 'dec']].values, R, L,
-                                       tree.query_ball_point(sky_xyz(stars.ra.values, stars.dec.values), reach)):
+    for (ra0, dec0), r, l, c, hits in zip(stars[['ra', 'dec']].values, R, L, cpa,
+                                          tree.query_ball_point(sky_xyz(stars.ra.values, stars.dec.values), reach)):
         if not hits:
             continue
         hits = np.asarray(hits)
@@ -882,7 +991,7 @@ def annotate_bright_stars(src: pd.DataFrame, stars: pd.DataFrame, out_to: float 
         d = np.where(own, np.inf, sep / r)
         np.minimum.at(best, hits, np.where(d <= out_to, d, np.inf))
         for pa in SPIKE_PA:
-            th = np.radians(pa)
+            th = np.radians(pa + c)
             along = dx * np.sin(th) + dy * np.cos(th); across = dx * np.cos(th) - dy * np.sin(th)
             spike[hits[~own & (np.abs(along) <= l) & (np.abs(across) <= SPIKE_WIDTH_ARCSEC / 2)]] = True
     return _attach(src, {'bright_star_d_over_R': best, 'in_star_spike': spike})
@@ -966,7 +1075,9 @@ def real_checks(src: pd.DataFrame, catalog: int, cuts: Cuts = Cuts()) -> List[Tu
     (in_both, in_pstarr) PS1's own verdict on its detections counts: nStackDetections >= PS1_MIN_STACK_DETECTIONS (our
     S/N can call a forced measurement D where PS1's detection pass found nothing: a blend or an underestimated error)
     and neither BAD_STACK nor SUSPECT_STACK (qualityFlag: at most one good measurement). For in_ztf the PS1 side is a
-    limit and all three only say the object is faint there."""
+    limit and all three only say the object is faint there. For the one-sided catalogs the detecting survey's light must
+    not be diffuse (`diffuse_light`): what one survey cannot see at all and the other sees only as an extended sheet is
+    scattered light, not an object that appeared or vanished."""
     checks = []
     sharp_max, isolation_arcsec = cuts.sharp_max, cuts.isolation_arcsec
     if isolation_arcsec is not None and catalog in (1, 2):                 # neighbour cuts before sharpness: what they
@@ -982,6 +1093,10 @@ def real_checks(src: pd.DataFrame, catalog: int, cuts: Cuts = Cuts()) -> List[Tu
                        src.ps1_nStackDetections.values >= PS1_MIN_STACK_DETECTIONS))
         checks.append(('PS1: not BAD_STACK', ~_bits(src.ps1_qualityFlag.values, BAD_STACK)))          # <= 1 good or suspect measurement
         checks.append(('PS1: not SUSPECT_STACK', ~_bits(src.ps1_qualityFlag.values, SUSPECT_STACK)))  # <= 1 good measurement
+    if cuts.diffuse_excess is not None and catalog in (1, 2):               # a sheet of scattered light, not an object
+        side, name = ('ztf', 'ZTF') if catalog == 1 else ('ps1', 'PS1')
+        checks.append((f'{name}: light not diffuse ((PSF - Kron - {cuts.diffuse_excess:g})/σ <= {cuts.diffuse_nsigma:g})',
+                       ~diffuse_light(src, side, cuts)))
     return checks
 
 
@@ -991,8 +1106,8 @@ def measured_sides_snr_ok(src: pd.DataFrame, b: str, snr_min: Optional[float] = 
     cat = src[f'{b}_cat'].values
     if snr_min is None:
         return cat >= 0
-    ztf_ok = ~np.isin(cat, (0, 1)) | (src[f'{b}_ztf_snr'].values >= snr_min)
-    ps1_ok = ~np.isin(cat, (0, 2)) | (src[f'{b}_ps1_snr'].values >= snr_min)
+    ztf_ok = ~np.isin(cat, (0, 1)) | (band_photometry(src, b, 'ztf')[2] >= snr_min)
+    ps1_ok = ~np.isin(cat, (0, 2)) | (band_photometry(src, b, 'ps1')[2] >= snr_min)
     return (cat >= 0) & ztf_ok & ps1_ok
 
 
@@ -1008,7 +1123,7 @@ def quality_steps(src: pd.DataFrame, point: np.ndarray, cuts: Cuts = Cuts()) -> 
         checks = {b: checks_of(b) for b in BANDS}
         return [(group, label, {b: checks[b][i][1] for b in BANDS}) for i, (label, _) in enumerate(checks[BANDS[0]])]
     start = per_band('structure', lambda b: [('measured by ZTF or PS1', ztf_detected(src, b) | src[f'{b}_ps1_meas'].values)])
-    quality = per_band('quality', lambda b: ztf_checks(src, b, point, cuts) + ps1_checks(src, b, cuts))
+    quality = per_band('quality', lambda b: ztf_checks(src, b, point, cuts) + ps1_checks(src, b, point, cuts))
     comparable = per_band('comparison', lambda b: [(COMPARABLE, src[f'{b}_cat'].values >= 0)])
     return start + quality + comparable
 
@@ -1107,7 +1222,7 @@ def run_branch(src: pd.DataFrame, catalog: int, cuts: Cuts = Cuts()) -> Tuple[pd
 # ----------------------------------------------------------------------------------------------- summaries
 
 SURVEY_CHECKS = {'ztf': lambda src, b, cuts: ztf_checks(src, b, src.point_source.values, cuts),
-                 'ps1': lambda src, b, cuts: ps1_checks(src, b, cuts)}
+                 'ps1': lambda src, b, cuts: ps1_checks(src, b, src.point_source.values, cuts)}
 SURVEY_NAME = {'ztf': 'ZTF', 'ps1': 'PS1'}
 
 
@@ -1294,12 +1409,14 @@ def field_box(src: pd.DataFrame, pad_deg: float = 0.4) -> Tuple[float, float, fl
 
 
 def prepare_field(field_id: int, data_dir: Optional[str] = None) -> pd.DataFrame:
-    """The parts that do not depend on the photometry choices: the merged table (`load_merged`) with its Gaia match, its PS1 skycell
-    (and whether that is one of MAST's bad polar skycells), its distance to the nearest bright star, and whether it
-    sits inside a brighter object's Kron aperture. `nearest_other_arcsec` comes with the merged table."""
+    """The parts that do not depend on the photometry choices: the merged table (`load_merged`) with its Gaia match,
+    whether DR2's catalog is missing at its position, its distance to the nearest bright star and whether it is in one
+    of that star's spike boxes (oriented along the detector columns, `ztf_column_pa`), and whether it sits inside a
+    brighter object's Kron aperture. `nearest_other_arcsec` comes with the merged table."""
     data_dir = data_dir or get_data_path()
     base = load_merged(field_id, data_dir)
     stars = bright_stars(field_id, data_dir, box=field_box(base))
+    stars['column_pa'] = ztf_column_pa(field_id, stars.ra.values, stars.dec.values, data_dir)
     base = annotate_gaia(base, gaia_table(base, f'field{int(field_id):06d}', data_dir, field_id=field_id))
     return annotate_neighbours(annotate_bright_stars(annotate_skycells(base), stars))
 
@@ -1350,9 +1467,9 @@ def annotate_outcomes(src: pd.DataFrame, waterfalls: Dict[str, 'Waterfall'], can
 
 def filter_prepared(base: pd.DataFrame, cuts: Cuts = Cuts(), verbose: bool = True):
     """Catalogs, the shared quality stage, the three branches up to the |sigma| cut, the envelopes from the two-sided
-    bands that reach it, then sigma, the |sigma| cut and the `snr_keep` step, on a `prepare_field` table (left
-    unmodified). Returns (src, envelopes, candidates, waterfalls); `waterfalls` also holds 'all', the shared stage
-    (`quality_waterfall`).
+    bands that reach it (one per morphology and band, `envelopes[morphology][band]`), then sigma, the |sigma| cut and
+    the `snr_keep` step, on a `prepare_field` table (left unmodified). Returns (src, envelopes, candidates,
+    waterfalls); `waterfalls` also holds 'all', the shared stage (`quality_waterfall`).
 
     The envelope sample is the S/N >= SNR_MIN population that reaches the |sigma| step (`snr_keep` comes after), clipped
     by `clip_envelope_sample` when `cuts.envelope_clip_mad` is set."""
@@ -1360,9 +1477,13 @@ def filter_prepared(base: pd.DataFrame, cuts: Cuts = Cuts(), verbose: bool = Tru
     waterfalls = {'all': quality_waterfall(src, cuts)}
     cut = {c: cut_bands(src, c, cuts) for c in CATALOG}
     reach_any = {b: np.logical_or.reduce([reach[b] for _, reach in cut.values()]) for b in BANDS}
-    if cuts.envelope_clip_mad is not None:
-        reach_any = clip_envelope_sample(src, reach_any, cuts.envelope_clip_mad)
-    envelopes = kde_envelopes(envelope_tables(src, reach_any))
+    envelopes = {}
+    morph = morphology(src)
+    for m in MORPHOLOGIES:                                                 # each population's own sample, clipped on its own
+        use = {b: reach_any[b] & (morph == m) for b in BANDS}
+        if cuts.envelope_clip_mad is not None:
+            use = clip_envelope_sample(src, use, cuts.envelope_clip_mad)
+        envelopes[m] = kde_envelopes(envelope_tables(src, use))
     src = annotate_sigma(src, envelopes)
     candidates = {}
     for c, (wf, reach) in cut.items():
@@ -1394,8 +1515,9 @@ def filter_field(field_id: int, data_dir: Optional[str] = None, cuts: Cuts = Cut
             quality_table(src, survey, cuts).to_csv(os.path.join(out, f'quality_{survey}.csv'))
         sort_table(src).to_csv(os.path.join(out, 'sort.csv'))
         catalog_table(src, cuts).to_csv(os.path.join(out, 'catalogs.csv'))
-        for b, env in envelopes.items():
-            np.savez(os.path.join(out, f'envelope_{b}.npz'), mag_grid=env.mag_grid, dmag_grid=env.dmag_grid, kde_ys=env.kde_ys)
+        for m, per_band in envelopes.items():
+            for b, env in per_band.items():
+                np.savez(os.path.join(out, f'envelope_{m}_{b}.npz'), mag_grid=env.mag_grid, dmag_grid=env.dmag_grid, kde_ys=env.kde_ys)
     return src, envelopes, candidates, waterfalls
 
 
@@ -1417,7 +1539,7 @@ def _box_width_for_text(text: str, fontsize: float = 12.5, inches_per_unit: floa
 
 
 EXPLAIN_COLS = (['ra', 'dec', 'ztf_idx', 'ps1_idx', 'catalog', 'catalog_reason', 'outcome', 'point_source']
-                + [f'{b}_{c}' for b in BANDS for c in ('ztf_status', 'ps1_status', 'ztf_psf', 'ps1_psf', 'ztf_snr', 'ps1_snr', 'sigma', 'dropped_by')])
+                + [f'{b}_{c}' for b in BANDS for c in ('ztf_status', 'ps1_status', 'sigma', 'dropped_by')])
 
 
 def explain(field_id: int, ra: float, dec: float, data_dir: Optional[str] = None, max_arcsec: float = 2.0) -> Optional[pd.Series]:
@@ -1436,8 +1558,10 @@ def explain(field_id: int, ra: float, dec: float, data_dir: Optional[str] = None
     print(f'field {field_id}: object {sep[i]:.2f}" from ({ra:.5f}, {dec:.5f})  ztf_idx {r.ztf_idx}  ps1_idx {r.ps1_idx}  '
           f'{"point" if r.point_source else "extended"}  catalog: {cat} ({r.catalog_reason})')
     for b in BANDS:
-        print(f'  {b}: ZTF {r[f"{b}_ztf_status"]} {fmt(r[f"{b}_ztf_psf"])} (S/N {fmt(r[f"{b}_ztf_snr"])}) | PS1 {r[f"{b}_ps1_status"]} {fmt(r[f"{b}_ps1_psf"])} '
-              f'(S/N {fmt(r[f"{b}_ps1_snr"])}) | sigma {fmt(r[f"{b}_sigma"])} | {r[f"{b}_dropped_by"]}')
+        row = r.to_frame().T
+        (zm, _, zs, _), (pm, _, ps, _) = band_photometry(row, b, 'ztf'), band_photometry(row, b, 'ps1')
+        print(f'  {b}: ZTF {r[f"{b}_ztf_status"]} {fmt(zm[0])} (S/N {fmt(zs[0])}) | PS1 {r[f"{b}_ps1_status"]} {fmt(pm[0])} '
+              f'(S/N {fmt(ps[0])}) | sigma {fmt(r[f"{b}_sigma"])} | {r[f"{b}_dropped_by"]}')
     print(f'  outcome: {r.outcome}')
     return r
 

@@ -1,9 +1,10 @@
 """ZTF deep reference-image products on IRSA: names, URLs, the per-field storage layout and the fetcher.
 
 Per quadrant and band IRSA serves the reference image (`refimg`), its per-pixel 1-sigma uncertainty in DN
-(`refunc`), the number of input frames per pixel (`refcov`), ZTF's DAOPhot PSF catalog (`refpsfcat`) and a
-SExtractor catalog (`refsexcat`, not used), plus logs. Products are stored one directory per field,
-`<ztf_dir>/field000643/`; `tools/fetch_ztf_products.py` fills it with `fetch_product`.
+(`refunc`, not used), ZTF's DAOPhot PSF catalog (`refpsfcat`) and a SExtractor catalog (`refsexcat`, not
+used), plus logs; the coverage map (`refcov`) adds nothing beyond the coadd's own NaNs and is not fetched.
+Products are stored one directory per field, `<ztf_dir>/field000643/`; `tools/fetch_ztf_products.py` fills it
+with `fetch_product`.
 """
 import os
 import random
@@ -16,7 +17,7 @@ from astropy.io import fits
 
 IBE_DEEP = 'https://irsa.ipac.caltech.edu/ibe/data/ztf/products/deep'
 PRODUCT_SUFFIX = {
-    'refimg': 'refimg.fits', 'refunc': 'refunc.fits', 'refcov': 'refcov.fits',
+    'refimg': 'refimg.fits', 'refunc': 'refunc.fits',
     'refpsfcat': 'refpsfcat.fits', 'refsexcat': 'refsexcat.fits', 'refimlog': 'refimlog.txt',
 }
 THROTTLE_CODES = (429, 503)   # IRSA answers these when a client asks faster than ~1 file per 2 s

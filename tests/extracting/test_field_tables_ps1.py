@@ -50,8 +50,11 @@ def field(monkeypatch):
         (1, 2): {'g': (_bad((bx - 15, by), (tbx, tby)), WCS_B), 'r': (_bad((bx - 15, by)), WCS_B),
                  'i': (_bad((bx - 15, by)), WCS_B)},
     }
-    monkeypatch.setattr(ft, 'quadrant_mask', lambda field, ccd, qid, band, data_dir=None: masks[(ccd, qid)][band])
-    monkeypatch.setattr(ft, '_quadrant_maglim', lambda field, ccd, qid, band, data_dir=None: {(1, 1): 22.0, (1, 2): 21.0}[(ccd, qid)])
+    from scipy.ndimage import distance_transform_edt
+    with_dist = lambda bad, wcs: (bad, ft._unpack_dist(ft._pack_dist(distance_transform_edt(~bad))), wcs)
+    monkeypatch.setattr(ft, 'quadrant_mask', lambda field, ccd, qid, band, data_dir=None: with_dist(*masks[(ccd, qid)][band]))
+    depth = {(1, 1): dict(maglim_header=22.0, gpctsig=1.3, medpunc=1.0, mag_5sigma=21.7), (1, 2): dict(maglim_header=21.0, gpctsig=1.2, medpunc=1.0, mag_5sigma=20.7)}
+    monkeypatch.setattr(ft, 'quadrant_depth', lambda field, ccd, qid, band, data_dir=None: depth[(ccd, qid)])
     cat = pd.DataFrame({
         'PanSTARR_ID': [1, 2, 3, 4, 5],
         'ra': [_sky(WCS_A, 10, 50)[0], ra_o, ra_t, 11.0, ra_c],       # A only, overlap near a mask in A, tie, outside both, clean overlap
@@ -69,22 +72,22 @@ def test_objects_outside_every_image_are_dropped_and_the_rest_kept(field):
 def test_an_object_in_one_image_takes_that_quadrant_in_every_band(field):
     for b in 'gri':
         assert (field.loc[1, f'{b}_ccd'], field.loc[1, f'{b}_qid']) == (1, 1) and field.loc[1, f'{b}_covered']
-        assert field.loc[1, f'{b}_maglim'] == 22.0
+        assert field.loc[1, f'{b}_maglim_header'] == 22.0 and field.loc[1, f'{b}_mag_5sigma'] == pytest.approx(21.7) and field.loc[1, f'{b}_gpctsig'] == pytest.approx(1.3)
 
 
 def test_a_clean_image_beats_a_deeper_one_where_the_position_is_near_a_mask(field):
     for b in 'gri':                                                  # A is deeper but its copy is 3 px from a mask
         assert (field.loc[2, f'{b}_ccd'], field.loc[2, f'{b}_qid']) == (1, 2)
-        assert field.loc[2, f'{b}_nan_dist_px'] == pytest.approx(15) and field.loc[2, f'{b}_maglim'] == 21.0
+        assert field.loc[2, f'{b}_nan_dist_px'] == pytest.approx(15) and field.loc[2, f'{b}_maglim_header'] == 21.0
 
 
 def test_among_clean_images_the_deeper_one_wins(field):
     for b in 'gri':
-        assert (field.loc[5, f'{b}_ccd'], field.loc[5, f'{b}_qid']) == (1, 1) and field.loc[5, f'{b}_maglim'] == 22.0
+        assert (field.loc[5, f'{b}_ccd'], field.loc[5, f'{b}_qid']) == (1, 1) and field.loc[5, f'{b}_maglim_header'] == 22.0
 
 
 def test_coverage_is_decided_band_by_band(field):
-    assert not field.loc[3, 'g_covered'] and field.loc[3, 'g_ccd'] == -1 and np.isnan(field.loc[3, 'g_maglim'])   # masked in g everywhere
+    assert not field.loc[3, 'g_covered'] and field.loc[3, 'g_ccd'] == -1 and np.isnan(field.loc[3, 'g_maglim_header']) and np.isnan(field.loc[3, 'g_mag_5sigma'])   # masked in g everywhere
     assert field.loc[3, 'r_covered'] and (field.loc[3, 'r_ccd'], field.loc[3, 'r_qid']) == (1, 2)                 # B's r is clean there
 
 

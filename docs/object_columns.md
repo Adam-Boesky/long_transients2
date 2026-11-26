@@ -40,7 +40,10 @@ Data/fields/<field>/
 | `sharp` | N (`refpsfcat` `sharp`) |
 | `flags` | N (`refpsfcat` `flags`) |
 | `magzp` | N (refpsfcat header MAGZP) |
-| `maglim` | N (refimg header MAGLIM) |
+| `gpctsig` | N (refimg header GPCTSIG: robust pixel scatter, DN) |
+| `medpunc` | N (refimg header MEDPUNC: median of the pipeline's pixel uncertainties, DN) |
+| `maglim_header` | refimg header MAGLIM: the reference pipeline's limiting magnitude, median catalog mag over 3.0 ≤ S/N ≤ 5.5 (~0.35 mag fainter than `mag_5sigma`; kept for reference) |
+| `mag_5sigma` | the catalog's 5σ depth: median `mag` of its sources with 4.5 ≤ S/N ≤ 5.5 (`catalog_m5`) |
 | `ccd` | CCD measured in |
 | `qid` | quadrant measured in |
 | `nan_dist_px` | px to the nearest masked pixel |
@@ -64,8 +67,8 @@ Data/fields/<field>/
 | `{b}_sep` | that row's offset, arcsec |
 | `{b}_covered` | on a valid pixel of some b image |
 | `{b}_ccd`, `{b}_qid` | chosen covering image: valid, then ≥ 5 px from a mask, then deepest (−1 none) |
-| `{b}_nan_dist_px` | that image's px to a mask |
-| `{b}_maglim` | that image's MAGLIM |
+| `{b}_nan_dist_px` | that image's px to a mask, in quarter-pixel steps rounded up, capped at 63.75 |
+| `{b}_maglim_header`, `{b}_gpctsig`, `{b}_medpunc`, `{b}_mag_5sigma` | that image's depth, as in `ztf_{b}` |
 | `{b}_ps1_covered` | a PS1 object measured in b within 1′ |
 | `{b}_ps1_nframes_local` | median nFrames of the 5 nearest PS1 objects within 60″ |
 
@@ -92,7 +95,7 @@ Data/fields/<field>/
 | `{b}_row` | N (`uniquePspsSTid` of the band's row) |
 | `{b}_projcell`, `{b}_skycell` | N (`projectionID`, `skyCellID` of the band's row) |
 | `{b}_detected` | not forced (`infoFlag2 & 4` clear), finite flux, error > 0 |
-| `{b}_covered`, `{b}_ccd`, `{b}_qid`, `{b}_nan_dist_px`, `{b}_maglim` | ZTF at the PS1 position, as in `ztf` |
+| `{b}_covered`, `{b}_ccd`, `{b}_qid`, `{b}_nan_dist_px`, `{b}_maglim_header`, `{b}_gpctsig`, `{b}_medpunc`, `{b}_mag_5sigma` | ZTF at the PS1 position, as in `ztf` |
 | `{b}_nframes_local` | median nFrames of the 5 nearest other PS1 objects within 60″ |
 
 ## `merged`: one row per object (`match_ps1`, mutual nearest within 1″; `merge_tables`; `nearest_other`)
@@ -110,10 +113,11 @@ Every ZTF object with its PS1 match, then every unmatched PS1 object. Values as 
 | `ps1_objid` | N (`objID`) |
 | `ps1_qualityFlag` | N (`qualityFlag`) |
 | `ps1_nStackDetections` | N (`nStackDetections`) |
+| `ps1_n_primary_rows` | N (`n_primary_rows`: stack rows with infoFlag3 STACK_PRIMARY in any band) |
 | `{b}_ccd`, `{b}_qid` | image the band is judged in: the detection's, else the chosen covering one |
 | `{b}_ztf_covered` | on a valid pixel of some b image |
 | `{b}_ztf_nan_dist` | that image's px to a mask |
-| `{b}_ztf_maglim` | that image's MAGLIM |
+| `{b}_ztf_maglim_header`, `{b}_ztf_gpctsig`, `{b}_ztf_medpunc`, `{b}_ztf_mag_5sigma` | that image's depth, as in `ztf_{b}` |
 | `{b}_ztf_psf` | N (DAOPhot `mag`) |
 | `{b}_ztf_psf_err` | N (DAOPhot `sigmag`) |
 | `{b}_ztf_snr` | N (DAOPhot `snr`) |
@@ -130,6 +134,7 @@ Every ZTF object with its PS1 match, then every unmatched PS1 object. Values as 
 | `{b}_ps1_flux`, `{b}_ps1_flux_err` | N (`PSFFlux`, `PSFFluxErr`) |
 | `{b}_ps1_kron_rad` | N (`KronRad`) |
 | `{b}_ps1_psfQfPerfect` | N |
+| `{b}_ps1_psfChiSq` | N (`{b}psfChiSq`: reduced χ² of the PSF fit) |
 | `{b}_ps1_sky` | N |
 | `{b}_ps1_infoFlag`, `{b}_ps1_infoFlag2` | N |
 | `{b}_ps1_projcell`, `{b}_ps1_skycell` | N (the band row's skycell) |
@@ -155,15 +160,14 @@ Every `merged` column (errors and S/N with a 0.01 mag floor, `floor_err`), plus:
 | `bright_star_d_over_R` | to the nearest G < 16 star, in its mask radii (`annotate_bright_stars`) |
 | `in_star_spike` | in one of its four spike boxes |
 | `inside_brighter_kron` | inside a brighter ZTF or PS1 object's Kron aperture (`annotate_neighbours`) |
-| `{b}_ztf_limit` | ZTF's 90% recovery limit in the band's quadrant, in the object's compared magnitude (`completeness_limits`) |
-| `{b}_ps1_limit` | PS1's, likewise |
+| `{b}_ztf_rec90_limit` | ZTF's 90% point-source recovery limit of the image the band is judged in, from `{b}_ztf_mag_5sigma` and `{b}_ztf_gpctsig` / `{b}_ztf_medpunc` (`ztf_recovery_mag`, `completeness_limits`; the 90 follows `LIMIT_COMPLETENESS`, `limit_col`) |
+| `{b}_ps1_rec90_limit` | PS1's, from the stack's injection test; NaN where the band has no stack or it never reaches 90 % (the band is uncovered, `ps1_checks`) |
 | `{b}_ztf_status`, `{b}_ps1_status` | D (S/N ≥ 5), L (below), U (nothing measured), X (fails quality) (`assign_catalogs`) |
 | `{b}_cat` | 0 ZTF vs PS1, 1 ZTF vs PS1 limit, 2 PS1 vs ZTF limit, −1 none |
 | `catalog` | 0 in_both, 1 in_ztf, 2 in_pstarr, −1 not comparable |
 | `catalog_reason` | why −1 |
 | `{b}_extendedness` | (PSF − Kron − 0.05)/σ, inverse-variance over both surveys |
-| `point_source` | not extended in ≥ 2 measured bands |
-| `{b}_use_psf` | compares PSF (else Kron) |
+| `point_source` | not extended in ≥ 2 measured bands; from here on every step reads PSF photometry for a point source and Kron for an extended object (`band_photometry`), never the other |
 | `{b}_ztf_use_meas` | ZTF's limit side uses its own sub-threshold measurement |
 | `{b}_ps1_use_forced` | PS1's limit side uses its own forced / sub-threshold measurement |
 | `{b}_dmag` | ZTF − PS1 of the compared magnitudes (`annotate_sigma`) |
@@ -171,8 +175,8 @@ Every `merged` column (errors and S/N with a 0.01 mag floor, `floor_err`), plus:
 | `{b}_dropped_by` | first step that dropped the band, or `kept` (`annotate_outcomes`) |
 | `outcome` | `candidate`, `not comparable: <reason>`, or `dropped: <step>` |
 
-Derived in the filter, not stored: ZTF detection (`ztf_detected`), compared magnitudes (`compared_magnitudes`), PS1
-depth (`ps1_depth`), polar-skycell badness (`ps1_skycell_bad`), the bright-star mask (`bright_star_masked`), Gaia
+Derived in the filter, not stored: ZTF detection (`ztf_detected`), compared magnitudes (`compared_magnitudes`),
+polar-skycell badness (`ps1_skycell_bad`), the bright-star mask (`bright_star_masked`), Gaia
 significances (`gaia_population_ok`).
 
 ## `filter/<catalog>_candidates`

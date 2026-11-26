@@ -1,0 +1,50 @@
+
+\begin{deluxetable*}{p{1.5in}p{5.0in}}
+\tablecaption{Per-band quality checks. Each check is applied to each band ($g$, $r$, $i$) of every object, separately for the ZTF and PS1 sides. A side that fails any check is unusable: neither its measurement nor its detection limit enters the comparison.
+\label{tab:band_filters}}
+\tablehead{\colhead{Filter} & \colhead{Logic}}
+\startdata
+\multicolumn{2}{c}{ZTF} \\
+\hline
+Bright star mask & Outside the mask of every Gaia DR2 star with $G < 16$: a circle of radius $R(G) = 1630'' \times 1.396^{-G}$ and four diffraction-spike boxes $12''$ wide, of half-length $R(16) \times 1.15^{16 - G}$, at $0^\circ$, $30^\circ$, $90^\circ$ and $150^\circ$ from the detector columns \\
+ZTF coverage & The position exists on a valid pixel of a ZTF reference image in the band \\
+DAOPhot flags & \texttt{flags} $= 0$ for the detection (no failed or bad-data fit) \\
+DAOPhot $\chi$ & \texttt{chi} $\le 6$ for the detection, the PSF-fit residual RMS over the expected (point and extended objects alike) \\
+Masked pixels & $> 5$\,px from the nearest masked pixel in the band's reference image (at the detection, or at the PS1 position for a limit) \\
+Kron masking & $\le 10\%$ of the ZTF Kron aperture pixels are masked (extended objects only) \\
+Kron measured & Extended objects only: a ZTF detection whose PSF S/N is $\ge 5$ has a Kron measurement; without one the side cannot be judged in the photometry its morphology commits it to, and is not a non-detection either (below S/N 5 the limit stands in) \\
+\hline
+\multicolumn{2}{c}{PS1} \\
+\hline
+Bad skycells & The band's stack row is not from one of MAST's mis-registered polar skycells\footnote{\url{https://outerspace.stsci.edu/spaces/PANSTARRS/pages/298812222/Plot+of+bad+skycells+near+the+North+Pole}}\\
+Catalog coverage & Without a PS1 object: the position is not in a DR2 missing-data region and $\delta > -30^\circ$\footnote{\url{https://outerspace.stsci.edu/spaces/PANSTARRS/pages/298812214/PS1+DR2+caveats}}, so the absence of an object means something \\
+PS1 coverage & Without a PS1 object: some PS1 object is measured in the band within $1'$, so the band's stack reaches the position and its limit can stand in \\
+Stack recovery & Without a PS1 detection in the band: the band's deep stack recovers 90\% of PS1's injected sources at some magnitude (a stack that never does, partly exposed on the survey edge or crowded in the Galactic plane, gives no limit to stand in) \\
+Residual sky & Band \texttt{sky} $\le 10^{-7}$\,Jy\,arcsec$^{-2}$ \\
+Stack depth & \texttt{nFrames} $\ge 4$: at least four input exposures in the stack at the position \\
+Band flags & None of \texttt{DEFECT}, \texttt{PEAK\_ON\_SPIKE}, \texttt{SATSTAR} (\texttt{infoFlag}); \texttt{ON\_SPIKE}, \texttt{ON\_STARCORE}, \texttt{ON\_BURNTOOL}, \texttt{SATSTAR\_PROFILE} (\texttt{infoFlag2})\footnote{\url{https://outerspace.stsci.edu/spaces/PANSTARRS/pages/298812465/PS1+Detection+Flags}}\\
+Measured & The PS1 object has a measurement in the band (forced photometry counts) \\
+Kron measured & Extended objects only: as for ZTF, a PS1 measurement at PSF S/N $\ge 5$ has a Kron measurement \\
+PSF coverage & \texttt{psfQfPerfect} $> 0.85$: the PSF-weighted fraction of unmasked pixels \\
+PSF fit & \texttt{psfChiSq} $\le 36$, the PSF fit's reduced $\chi^2$ (the ZTF $\chi \le 6$ cut squared) \\
+Primary skycell & The object has a stack row from its primary skycell (\texttt{infoFlag3} \texttt{STACK\_PRIMARY}); an object seen only in a neighbouring skycell's overlap is dropped \\
+\enddata
+\end{deluxetable*}
+
+\begin{deluxetable*}{p{1.4in}p{1.5in}p{3.8in}}
+\tablecaption{Per-object filters, applied after the per-band checks, in order. The first filter, ``Comparable'', sorts objects into the \texttt{in\_both}, \texttt{in\_ztf} and \texttt{in\_pstarr} catalogs. A band dropped by any check stays dropped, and an object is removed as soon as fewer than two bands remain.\label{tab:object_filters}}
+\tablehead{\colhead{Filter} & \colhead{Applies to} & \colhead{Logic}}
+\startdata
+Comparable & All objects & A band is two-sided if both usable sides are detected ($\mathrm{S/N} \ge 5$ in the photometry the object's morphology commits it to), ZTF-only if ZTF is detected and PS1 is not, PS1-only if the reverse; a band with an unusable side, or detected by neither, compares nothing. Objects with $\ge 2$ two-sided bands go to \texttt{in\_both} (their one-sided bands are dropped); otherwise objects with $\ge 2$ ZTF-only bands and no two-sided or PS1-only band go to \texttt{in\_ztf}, and the reverse to \texttt{in\_pstarr}; everything else is removed as not comparable \\
+Isolation & \texttt{in\_ztf}, \texttt{in\_pstarr} & No other ZTF or PS1 object within $3''$ \\
+Sharpness & All catalogs, point sources only & $|\langle\texttt{sharp}\rangle| \le 0.5$, the $(\mathrm{S/N})^2$-weighted mean over the object's ZTF detections \\
+PS1 stack detections & \texttt{in\_both}, \texttt{in\_pstarr} & \texttt{nStackDetections} $\ge 2$: PS1's own detection pass found the object in at least two stacks \\
+PS1 stack quality & \texttt{in\_both}, \texttt{in\_pstarr} & Neither \texttt{BAD\_STACK} nor \texttt{SUSPECT\_STACK} set in \texttt{qualityFlag}\footnote{\url{https://outerspace.stsci.edu/spaces/PANSTARRS/pages/298812464/PS1+Object+Flags}}\\
+Light not diffuse & \texttt{in\_ztf}, \texttt{in\_pstarr} & On the detecting survey's side, $(m_\mathrm{PSF} - m_\mathrm{Kron} - 0.5)/\sigma \le 3$ in all but at most one measured band: a one-sided object whose only light is an extended sheet is scattered light in the image, not a source that appeared or vanished \\
+Gaia proper motion & All catalogs & Closest Gaia DR3 source within $5''$ has no proper motion, or the proper motion measurement is less than $5\sigma$ \\
+Gaia parallax & All catalogs & Closest Gaia DR3 source within $5''$ has no parallax, or the parallax measurement is less than $5\sigma$ \\
+Significant change & All catalogs & $|\sigma| > 3$ in at least two compared bands, with $\sigma$ the position of the band's $\Delta m = m_\mathrm{ZTF} - m_\mathrm{PS1}$ in the KDE envelope of $\Delta m$ against magnitude built from the two-sided bands of the object's morphology (point sources from PSF $\Delta m$, extended objects from Kron $\Delta m$); against a limit, only the direction the limit allows counts (brightening against a PS1 limit, fading against a ZTF limit) \\
+Consistent sign & All catalogs & At least two of the bands with $|\sigma| > 3$ have $\sigma$ of the same sign \\
+\enddata
+\tablecomments{An object is extended if $(m_\mathrm{PSF} - m_\mathrm{Kron} - 0.05)/\sigma > 3$, combined over ZTF and PS1 by inverse variance, in at least two measured bands (in the one band if only one has a Kron magnitude); an object with no Kron magnitude anywhere is a point source. Extended objects are measured, detected and compared in Kron magnitudes on both sides (with $\mathrm{S/N} = 1.0857 / \sigma_\mathrm{Kron}$), point sources in PSF magnitudes; nothing after the morphology reads the other kind. A survey's detection limit is the magnitude at which it recovers 90\% of point sources: for ZTF from the reference image's catalog depth and pixel-noise ratio, for PS1 from its injection-recovery test of the stack the band is judged in.}
+\end{deluxetable*}

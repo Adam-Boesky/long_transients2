@@ -36,8 +36,13 @@ from .ztf_products import product_dir, refimg_path
 MATCH_ARCSEC = 1.0
 REF_SIZE_PX = 3200                 # reference-image side (Explanatory Supplement section 7.2)
 CLEAN_PX = 5                       # a position this far from a masked pixel counts as clean when choosing among covering images
+DIST_STEP_PX = 0.25                # the cached distance-to-mask map is uint8 in these steps, rounded up, so `d > n` for whole n is exact
+DIST_CAP_PX = 255 * DIST_STEP_PX   # ... and capped here (63.75 px; the filter asks about 5 px)
 PS1_COVERAGE_ARCMIN = 1.0          # PS1's band-b stack reaches a position if it measured some object in b this close (the old pipeline's 1' rule)
 NFRAMES_NEIGHBOURS, NFRAMES_MAX_ARCSEC = 5, 60.0   # PS1 stack frames at a position: median nFrames of its nearest PS1 objects
+M5_SNR = (4.5, 5.5)                # the catalog's 5-sigma depth: median mag of sources with S/N in this window (Masci et al. 2019; the
+                                   # reference pipeline's own MAGLIM medians over 3.0-5.5 and lands ~0.35 mag fainter)
+DEPTH_COLS = ('maglim_header', 'gpctsig', 'medpunc', 'mag_5sigma')   # per image: header MAGLIM, GPCTSIG, MEDPUNC, and the catalog's 5-sigma depth
 PSF_COLS = {'ra': 'ra', 'dec': 'dec', 'xpos': 'x', 'ypos': 'y', 'mag': 'mag', 'sigmag': 'magerr', 'snr': 'snr', 'chi': 'chi', 'sharp': 'sharp', 'flags': 'flags'}
 KRON_COLS = {'mag': 'zkron', 'magerr': 'zkron_err', 'r1': 'zkron_r1', 'r_ap': 'zkron_rap', 'sky_radius': 'zkron_sky', 'flag': 'zkron_flag', 'masked_frac': 'zkron_masked'}
 
@@ -48,12 +53,6 @@ def field_dir(field: int, data_dir: Optional[str] = None) -> str:
 
 def quadrant_name(ccd: int, qid: int) -> str:
     return f'c{int(ccd):02d}_q{int(qid)}'
-
-
-def _optional(path: str) -> Optional[str]:
-    """A product path, or None when the file was not downloaded (refunc/refcov are optional: without them the loader
-    uses the gain model for the variance and the image's own NaNs for the mask)."""
-    return path if os.path.exists(path) else None
 
 
 def has_quadrant_band(field: int, ccd: int, qid: int, band: str, data_dir: Optional[str] = None) -> bool:
@@ -97,23 +96,23 @@ def mutual_nearest(ra1, dec1, ra2, dec2, radius_arcsec: float = MATCH_ARCSEC) ->
 # ----------------------------------------------------------------------------------------------- per band, per quadrant
 
 def band_catalog(field: int, ccd: int, qid: int, band: str, data_dir: Optional[str] = None, with_kron: bool = True,
-                 overwrite: bool = False, require: Sequence[str] = ()) -> pd.DataFrame:
+                 overwrite: bool = False) -> pd.DataFrame:
     """One quadrant's DAOPhot catalog in one band, with our Kron photometry attached; cached under the field
-    directory. `require` names optional products (refunc, refcov) that must exist."""
+    directory."""
     data_dir = data_dir or get_data_path()
     out_dir = os.path.join(field_dir(field, data_dir), 'quadrants')
     path = os.path.join(out_dir, f'ztf_{quadrant_name(ccd, qid)}_{band}.parquet')
     if os.path.exists(path) and not overwrite:
         cat = pd.read_parquet(path)
-        if 'sky' not in cat:                                  # a cache from before the residual sky: add it, keep the rest
+        if 'sky' not in cat or any(c not in cat for c in DEPTH_COLS):   # a cache from before these columns: add them, keep the rest
             im = load_refimg(refimg_path(os.path.join(data_dir, 'ztf_data'), field, ccd, qid, band))
-            cat['sky'] = residual_sky(im, cat.x.values, cat.y.values)
+            if 'sky' not in cat:
+                cat['sky'] = residual_sky(im, cat.x.values, cat.y.values)
+            for c, v in image_depth(im.header, cat.mag.values, cat.snr.values).items():
+                cat[c] = v
             cat.to_parquet(path + '.part'); os.replace(path + '.part', path)
         return cat
     ztf_dir = os.path.join(data_dir, 'ztf_data')
-    for product in require:
-        if not os.path.exists(refimg_path(ztf_dir, field, ccd, qid, band, product)):
-            raise FileNotFoundError(f'required product missing: {refimg_path(ztf_dir, field, ccd, qid, band, product)}')
     with fits.open(refimg_path(ztf_dir, field, ccd, qid, band, 'refpsfcat')) as hdul:
         raw = Table(hdul[1].data)
         magzp = float(hdul[0].header['MAGZP'])
@@ -123,14 +122,17 @@ def band_catalog(field: int, ccd: int, qid: int, band: str, data_dir: Optional[s
     cat['mag'] += magzp                                   # refpsfcat magnitudes are instrumental; MAGZP calibrates them (Supplement section 7.3)
     cat['magzp'] = magzp
     cat['ccd'], cat['qid'] = int(ccd), int(qid)
-    im = load_refimg(refimg_path(ztf_dir, field, ccd, qid, band), unc_path=_optional(refimg_path(ztf_dir, field, ccd, qid, band, 'refunc')),
-                         cov_path=_optional(refimg_path(ztf_dir, field, ccd, qid, band, 'refcov')))
+    im = load_refimg(refimg_path(ztf_dir, field, ccd, qid, band))
     if abs(im.zero_point - magzp) > 1e-6 or im.header.get('NMATCHES') != hdul_nmatches:   # the deep references are rebuilt on a rolling basis
         raise RuntimeError(f'{refimg_path(ztf_dir, field, ccd, qid, band, "refpsfcat")}: catalog and image come from different reference builds '
                            f'(MAGZP {magzp} vs {im.zero_point}, NMATCHES {hdul_nmatches} vs {im.header.get("NMATCHES")})')
     xi, yi = np.clip(np.round(cat.x.values - 1).astype(int), 0, im.shape[1] - 1), np.clip(np.round(cat.y.values - 1).astype(int), 0, im.shape[0] - 1)
-    cat['nan_dist_px'] = distance_transform_edt(~im.bad)[yi, xi]              # distance to the nearest masked pixel
+    dist = distance_transform_edt(~im.bad)                                      # distance to the nearest masked pixel
+    cat['nan_dist_px'] = dist[yi, xi]
+    _save_mask(mask_path(field, ccd, qid, band, data_dir), im.bad, dist)        # the coverage pass reads it instead of recomputing
     cat['sky'] = residual_sky(im, cat.x.values, cat.y.values)
+    for c, v in image_depth(im.header, cat.mag.values, cat.snr.values).items():
+        cat[c] = v
     if with_kron:
         frame = kron.prepare(im, cat.ra.values, cat.dec.values)
         kron.moment_floor(frame, np.nan_to_num(cat.snr.values, nan=0.0))
@@ -138,7 +140,6 @@ def band_catalog(field: int, ccd: int, qid: int, band: str, data_dir: Optional[s
         for src, col in KRON_COLS.items():
             cat[col] = res[src].values
         cat['zkron_floor_arcsec'] = frame.r_min * im.pixel_scale
-        cat['maglim'] = im.mag_limit
     os.makedirs(out_dir, exist_ok=True)
     cat.to_parquet(path)
     return cat
@@ -269,29 +270,55 @@ def merge_bands(cats: Dict[str, pd.DataFrame], radius_arcsec: float = MATCH_ARCS
     return obj
 
 
+def mask_path(field: int, ccd: int, qid: int, band: str, data_dir: Optional[str] = None) -> str:
+    return os.path.join(field_dir(field, data_dir), 'quadrants', f'mask_{quadrant_name(ccd, qid)}_{band}.npz')
+
+
+def _pack_dist(dist: np.ndarray) -> np.ndarray:
+    """A distance map in DIST_STEP_PX steps, rounded up and capped at DIST_CAP_PX, as uint8: ceil keeps every
+    `distance > n` for whole-pixel n (NAN_RADIUS_PX, CLEAN_PX) exactly as the unquantised map would decide it."""
+    return np.minimum(np.ceil(dist / DIST_STEP_PX), 255).astype(np.uint8)
+
+
+def _unpack_dist(packed: np.ndarray) -> np.ndarray:
+    return packed.astype(np.float32) * DIST_STEP_PX
+
+
+def _save_mask(path: str, bad: np.ndarray, dist: np.ndarray) -> None:
+    """The bit-packed bad-pixel mask and its distance-to-mask map (`_pack_dist`)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    np.savez(path + '.part', bad=np.packbits(bad), shape=np.array(bad.shape), dist_q=_pack_dist(dist))
+    os.replace(path + '.part.npz', path)
+
+
 def quadrant_mask(field: int, ccd: int, qid: int, band: str, data_dir: Optional[str] = None):
-    """(bad-pixel mask, WCS) of one quadrant's reference image in one band, as the loader defines bad (NaN, invalid
-    refunc, thin coverage). Cached bit-packed beside the field tables, so later builds do not reload the three FITS files."""
+    """(bad-pixel mask, distance of every pixel to the nearest masked one in px, in DIST_STEP_PX steps rounded up and
+    capped at DIST_CAP_PX, WCS) of one quadrant's reference image in one band, as the loader defines bad (NaN, thin
+    coverage). `band_catalog` caches both beside the field tables, so the coverage pass neither reloads the FITS
+    files nor recomputes the distance transform; a cache from before the map carried it is completed here."""
     from astropy.wcs import WCS
     data_dir = data_dir or get_data_path()
-    path = os.path.join(field_dir(field, data_dir), 'quadrants', f'mask_{quadrant_name(ccd, qid)}_{band}.npz')
+    path = mask_path(field, ccd, qid, band, data_dir)
     ztf_dir = os.path.join(data_dir, 'ztf_data')
     if not has_quadrant_band(field, ccd, qid, band, data_dir):                 # band not imaged here: all bad, r-band WCS
-        bad, wcs = quadrant_mask(field, ccd, qid, 'r', data_dir)
-        return np.ones_like(bad), wcs
+        bad, dist, wcs = quadrant_mask(field, ccd, qid, 'r', data_dir)
+        return np.ones_like(bad), np.zeros_like(dist), wcs
     if os.path.exists(path):
         z = np.load(path)
         shape = tuple(z['shape'])
         bad = np.unpackbits(z['bad'], count=shape[0] * shape[1]).reshape(shape).astype(bool)
+        if 'dist_q' in z:
+            dist = _unpack_dist(z['dist_q'])
+        else:
+            dist = distance_transform_edt(~bad); _save_mask(path, bad, dist); dist = _unpack_dist(_pack_dist(dist))
         header = fits.getheader(refimg_path(ztf_dir, field, ccd, qid, band))
         if 'RADECSYS' in header:
             header.setdefault('RADESYS', header['RADECSYS']); del header['RADECSYS']
-        return bad, WCS(header)
-    im = load_refimg(refimg_path(ztf_dir, field, ccd, qid, band), unc_path=_optional(refimg_path(ztf_dir, field, ccd, qid, band, 'refunc')),
-                         cov_path=_optional(refimg_path(ztf_dir, field, ccd, qid, band, 'refcov')))
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    np.savez(path, bad=np.packbits(im.bad), shape=np.array(im.shape))
-    return im.bad, im.wcs
+        return bad, dist, WCS(header)
+    im = load_refimg(refimg_path(ztf_dir, field, ccd, qid, band))
+    dist = distance_transform_edt(~im.bad)
+    _save_mask(path, im.bad, dist)
+    return im.bad, _unpack_dist(_pack_dist(dist)), im.wcs
 
 
 def _near_image(wcs, shape: Tuple[int, int], ra: np.ndarray, dec: np.ndarray, pad_deg: float = 0.02) -> np.ndarray:
@@ -312,25 +339,42 @@ def _pixels(wcs, shape: Tuple[int, int], ra: np.ndarray, dec: np.ndarray) -> Tup
     return inside, np.clip(np.round(x).astype(int), 0, nx - 1), np.clip(np.round(y).astype(int), 0, ny - 1)
 
 
-def _quadrant_maglim(field: int, ccd: int, qid: int, band: str, data_dir: Optional[str] = None) -> float:
-    """The reference image's MAGLIM (its nominal 5-sigma depth) from the header; NaN where the band has no image."""
+def catalog_m5(mag: np.ndarray, snr: np.ndarray, window: Tuple[float, float] = M5_SNR) -> float:
+    """The catalog's 5-sigma depth: median calibrated magnitude of the sources with S/N in `window`; NaN without any."""
+    lo, hi = window
+    sel = (snr >= lo) & (snr <= hi) & np.isfinite(mag)
+    return float(np.median(mag[sel])) if sel.any() else np.nan
+
+
+def image_depth(header, mag: np.ndarray, snr: np.ndarray) -> Dict[str, float]:
+    """What a reference image says about its own depth (DEPTH_COLS): the header's MAGLIM, GPCTSIG (robust pixel scatter)
+    and MEDPUNC (median of the pipeline's pixel uncertainties), and `catalog_m5` of its calibrated catalog. NaN where
+    missing. The filter turns these into the band's limit at any completeness."""
+    key = lambda k: float(header[k]) if k in header else np.nan
+    return {'maglim_header': key('MAGLIM'), 'gpctsig': key('GPCTSIG'), 'medpunc': key('MEDPUNC'), 'mag_5sigma': catalog_m5(mag, snr)}
+
+
+def quadrant_depth(field: int, ccd: int, qid: int, band: str, data_dir: Optional[str] = None) -> Dict[str, float]:
+    """`image_depth` of one quadrant's reference image from its header and catalog; all NaN where the band has no image."""
     data_dir = data_dir or get_data_path()
     if not has_quadrant_band(field, ccd, qid, band, data_dir):
-        return np.nan
-    h = fits.getheader(refimg_path(os.path.join(data_dir, 'ztf_data'), field, ccd, qid, band))
-    return float(h['MAGLIM']) if 'MAGLIM' in h else np.nan
+        return {c: np.nan for c in DEPTH_COLS}
+    ztf_dir = os.path.join(data_dir, 'ztf_data')
+    with fits.open(refimg_path(ztf_dir, field, ccd, qid, band, 'refpsfcat')) as hdul:
+        mag = np.asarray(hdul[1].data['mag'], float) + float(hdul[0].header['MAGZP'])
+        snr = np.asarray(hdul[1].data['snr'], float)
+    return image_depth(fits.getheader(refimg_path(ztf_dir, field, ccd, qid, band)), mag, snr)
 
 
 def _coverage_in_quadrant(args):
     """For the positions inside one quadrant-band image: (indices, on a valid pixel, distance to the nearest masked pixel
-    in px, the image's MAGLIM)."""
+    in px, the image's `quadrant_depth`)."""
     field, ccd, qid, band, data_dir, ra, dec = args
-    bad, wcs = quadrant_mask(field, ccd, qid, band, data_dir)
+    bad, dist, wcs = quadrant_mask(field, ccd, qid, band, data_dir)
     idx = _near_image(wcs, bad.shape, ra, dec)
     inside, xi, yi = _pixels(wcs, bad.shape, ra[idx], dec[idx])
     idx, xi, yi = idx[inside], xi[inside], yi[inside]
-    dist = distance_transform_edt(~bad)[yi, xi] if len(idx) else np.zeros(0)
-    return idx, ~bad[yi, xi], dist, _quadrant_maglim(field, ccd, qid, band, data_dir)
+    return idx, ~bad[yi, xi], dist[yi, xi].astype(float), quadrant_depth(field, ccd, qid, band, data_dir)
 
 
 def ztf_coverage(ra: np.ndarray, dec: np.ndarray, field: int, quadrants: Iterable[Tuple[int, int]], data_dir: Optional[str] = None,
@@ -338,8 +382,9 @@ def ztf_coverage(ra: np.ndarray, dec: np.ndarray, field: int, quadrants: Iterabl
     """What ZTF has at each position, per band, from the one covering image chosen in this order: the position on a
     valid pixel, then at least CLEAN_PX from a masked pixel, then the deepest MAGLIM. Columns `{b}_covered` (some
     image has it on a valid pixel), `{b}_ccd`, `{b}_qid` (that image; -1 if none covers it), `{b}_nan_dist_px` (the
-    distance to the nearest masked pixel in it; 0 if none covers it) and `{b}_maglim` (its MAGLIM; NaN if none), plus
-    `on_image`: inside some image of some band at all. Quadrant-bands run in `n_jobs` processes."""
+    distance to the nearest masked pixel in it, in DIST_STEP_PX steps rounded up, capped at DIST_CAP_PX; 0 if none covers it) and `{b}_maglim_header`, `{b}_gpctsig`, `{b}_medpunc`,
+    `{b}_mag_5sigma` (its `quadrant_depth`; NaN if none), plus `on_image`: inside some image of some band at all. Quadrant-bands
+    run in `n_jobs` processes."""
     ra, dec = np.asarray(ra, float), np.asarray(dec, float)
     quadrants = list(quadrants)
     jobs = [(field, ccd, qid, b, data_dir, ra, dec) for b in BANDS for ccd, qid in quadrants]
@@ -354,18 +399,21 @@ def ztf_coverage(ra: np.ndarray, dec: np.ndarray, field: int, quadrants: Iterabl
     for b in BANDS:
         score = np.full(n, -np.inf)
         ccd, qid = np.full(n, -1, np.int16), np.full(n, -1, np.int8)
-        covered, dist, maglim = np.zeros(n, bool), np.zeros(n), np.full(n, np.nan)
-        for job, (idx, valid, d, ml) in zip(jobs, hits):
+        covered, dist, depth = np.zeros(n, bool), np.zeros(n), {c: np.full(n, np.nan) for c in DEPTH_COLS}
+        for job, (idx, valid, d, dep) in zip(jobs, hits):
             if job[3] != b or len(idx) == 0:
                 continue
             out['on_image'][idx] = True
-            sc = valid * 1e4 + (valid & (d > CLEAN_PX)) * 1e2 + np.where(valid, np.nan_to_num(ml, nan=0.0), d)   # covered > clean > deeper
+            sc = valid * 1e4 + (valid & (d > CLEAN_PX)) * 1e2 + np.where(valid, np.nan_to_num(dep['maglim_header'], nan=0.0), d)   # covered > clean > deeper
             better = sc > score[idx]
             take = idx[better]
             score[take], ccd[take], qid[take] = sc[better], job[1], job[2]
-            covered[take], dist[take], maglim[take] = valid[better], d[better], ml
+            covered[take], dist[take] = valid[better], d[better]
+            for c in DEPTH_COLS:
+                depth[c][take] = dep[c]
         out.update({f'{b}_covered': covered, f'{b}_ccd': np.where(covered, ccd, -1).astype(np.int16), f'{b}_qid': np.where(covered, qid, -1).astype(np.int8),
-                    f'{b}_nan_dist_px': np.where(covered, dist, 0.0).astype(np.float32), f'{b}_maglim': np.where(covered, maglim, np.nan).astype(np.float32)})
+                    f'{b}_nan_dist_px': np.where(covered, dist, 0.0).astype(np.float32),
+                    **{f'{b}_{c}': np.where(covered, depth[c], np.nan).astype(np.float32) for c in DEPTH_COLS}})
     return pd.DataFrame(out)
 
 
@@ -381,7 +429,7 @@ def object_coverage(obj: pd.DataFrame, field: int, quadrants: Iterable[Tuple[int
 
 def _quadrant_sky_grid(field: int, ccd: int, qid: int, data_dir: Optional[str], step_px: int = 200) -> Tuple[np.ndarray, np.ndarray]:
     """Positions every `step_px` pixels across one quadrant's reference image (r band; the bands share a footprint)."""
-    bad, wcs = quadrant_mask(field, ccd, qid, 'r', data_dir)
+    bad, _, wcs = quadrant_mask(field, ccd, qid, 'r', data_dir)
     yy, xx = np.mgrid[0:bad.shape[0]:step_px, 0:bad.shape[1]:step_px]
     ra, dec = wcs.pixel_to_world_values(xx.ravel(), yy.ravel())
     return np.asarray(ra), np.asarray(dec)
@@ -415,17 +463,27 @@ def ps1_neighbourhood(ra: np.ndarray, dec: np.ndarray, ps1: pd.DataFrame) -> pd.
     return pd.DataFrame(out)
 
 
-def ps1_field(field: int, quadrants: Iterable[Tuple[int, int]], data_dir: Optional[str] = None,
-              stack: Optional[str] = None, n_jobs: int = 1) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """The field's PS1 objects: the cleaned stack catalog of every partition under its reference images
-    (`ps1_stack.objects`), restricted to objects inside some image, with `ztf_coverage` at their positions (what ZTF
-    has there, per band) and `{b}_nframes_local` (`ps1_neighbourhood`; their own `{b}nFrames` where they have one).
-    Objects on masked pixels (saturated stars) stay, so they can still serve as counterparts. Returns (the field's
-    objects, the untrimmed partition catalog, for the neighbourhood of the ZTF objects)."""
-    quadrants = list(quadrants)
+def ps1_partitions(field: int, quadrants: Iterable[Tuple[int, int]], data_dir: Optional[str] = None, stack: Optional[str] = None) -> pd.DataFrame:
+    """The cleaned stack catalog of every PS1 partition under the field's reference images (`ps1_stack.objects`),
+    untrimmed."""
     grid = [_quadrant_sky_grid(field, ccd, qid, data_dir) for ccd, qid in quadrants]
-    full = ps1_stack.objects(np.concatenate([g[0] for g in grid]), np.concatenate([g[1] for g in grid]), stack).reset_index(drop=True)
-    cov = ztf_coverage(full.ra.to_numpy(), full.dec.to_numpy(), field, quadrants, data_dir, n_jobs)
+    return ps1_stack.objects(np.concatenate([g[0] for g in grid]), np.concatenate([g[1] for g in grid]), stack).reset_index(drop=True)
+
+
+def ps1_field(field: int, quadrants: Iterable[Tuple[int, int]], data_dir: Optional[str] = None,
+              stack: Optional[str] = None, n_jobs: int = 1, full: Optional[pd.DataFrame] = None,
+              cov: Optional[pd.DataFrame] = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """The field's PS1 objects: the cleaned stack catalog of every partition under its reference images
+    (`ps1_partitions`, or `full`), restricted to objects inside some image, with `ztf_coverage` at their positions
+    (what ZTF has there, per band; `cov` where the caller already swept the images for them) and `{b}_nframes_local`
+    (`ps1_neighbourhood`; their own `{b}nFrames` where they have one). Objects on masked pixels (saturated stars)
+    stay, so they can still serve as counterparts. Returns (the field's objects, the untrimmed partition catalog, for
+    the neighbourhood of the ZTF objects)."""
+    quadrants = list(quadrants)
+    if full is None:
+        full = ps1_partitions(field, quadrants, data_dir, stack)
+    if cov is None:
+        cov = ztf_coverage(full.ra.to_numpy(), full.dec.to_numpy(), field, quadrants, data_dir, n_jobs)
     near = ps1_neighbourhood(full.ra.to_numpy(), full.dec.to_numpy(), full)
     near = near[[f'{b}_ps1_nframes_local' for b in BANDS]].rename(columns=lambda c: c.replace('_ps1_', '_'))
     cat = pd.concat([full, cov.drop(columns='on_image'), near], axis=1)
@@ -438,7 +496,8 @@ def merge_tables(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
     """One row per object: every ZTF object (with its PS1 match, if any) followed by every unmatched PS1 object, both
     surveys' values side by side as measured or catalogued (no error floor; the filter applies it). Per band, the ZTF
     values come from the detection's row in `ztf_{b}`, and the image the band is judged in (`{b}_ccd`, `{b}_qid`,
-    `{b}_ztf_nan_dist`, `{b}_ztf_maglim`) is the detection's own, else the covering image `ztf_coverage` chose. The
+    `{b}_ztf_nan_dist`, `{b}_ztf_maglim_header`, `{b}_ztf_gpctsig`, `{b}_ztf_medpunc`, `{b}_ztf_mag_5sigma`) is the detection's own, else
+    the covering image `ztf_coverage` chose. The
     PS1 values come from the PS1 object's band row. -1 / NaN / 0 where a survey has nothing. Columns:
     docs/object_columns.md."""
     obj_ps1 = np.full(len(obj), -1); obj_ps1[matches.ztf_obj.values] = matches.ps1.values
@@ -460,6 +519,7 @@ def merge_tables(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
         'ps1_objid': from_ps1(ps1.PanSTARR_ID.values.astype(np.int64), -1),
         'ps1_qualityFlag': from_ps1(ps1.qualityFlag.fillna(0).values.astype(np.int64), 0),
         'ps1_nStackDetections': from_ps1(ps1.nStackDetections.fillna(0).values.astype(np.int16), 0),
+        'ps1_n_primary_rows': from_ps1(ps1.n_primary_rows.fillna(0).values.astype(np.int16), 0),
     }
     nan_p = np.full(n_p, np.nan)
     for b in BANDS:
@@ -471,7 +531,7 @@ def merge_tables(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
             f'{b}_ccd': image('ccd', f'{b}_ccd', np.int16), f'{b}_qid': image('qid', f'{b}_qid', np.int8),
             f'{b}_ztf_covered': np.concatenate([obj[f'{b}_covered'].values, ps1[f'{b}_covered'].values[ps1_only]]),
             f'{b}_ztf_nan_dist': image('nan_dist_px', f'{b}_nan_dist_px', np.float32),
-            f'{b}_ztf_maglim': image('maglim', f'{b}_maglim', np.float32),
+            **{f'{b}_ztf_{c}': image(c, f'{b}_{c}', np.float32) for c in DEPTH_COLS},
             f'{b}_ztf_psf': take('mag'), f'{b}_ztf_psf_err': take('magerr'), f'{b}_ztf_snr': take('snr'),
             f'{b}_ztf_sharp': take('sharp').astype(np.float32), f'{b}_ztf_chi': take('chi').astype(np.float32),
             f'{b}_ztf_sky': take('sky').astype(np.float32),
@@ -481,7 +541,7 @@ def merge_tables(bands: Dict[str, pd.DataFrame], obj: pd.DataFrame, ps1: pd.Data
         })
         cols[f'{b}_ps1_detected'] = from_ps1(ps1[f'{b}_detected'].values.astype(bool), False)
         for kind, col in (('psf', 'PSFMag'), ('psf_err', 'PSFMagErr'), ('kron', 'KronMag'), ('kron_err', 'KronMagErr'),
-                          ('flux', 'PSFFlux'), ('flux_err', 'PSFFluxErr'), ('kron_rad', 'KronRad'), ('psfQfPerfect', 'psfQfPerfect'), ('sky', 'sky')):
+                          ('flux', 'PSFFlux'), ('flux_err', 'PSFFluxErr'), ('kron_rad', 'KronRad'), ('psfQfPerfect', 'psfQfPerfect'), ('psfChiSq', 'psfChiSq'), ('sky', 'sky')):
             cols[f'{b}_ps1_{kind}'] = from_ps1(ps1[f'{b}{col}'].values, np.nan)
         for col in ('infoFlag', 'infoFlag2'):
             cols[f'{b}_ps1_{col}'] = from_ps1(ps1[f'{b}{col}'].fillna(0).values.astype(np.int64), 0)
@@ -521,19 +581,20 @@ def match_ps1(obj: pd.DataFrame, ps1: pd.DataFrame, radius_arcsec: float = MATCH
 
 # ----------------------------------------------------------------------------------------------- driver
 
-def build_field(field: int, quadrants: Sequence[Tuple[int, int]], data_dir: Optional[str] = None, overwrite: bool = False, n_jobs: int = 1,
-                require: Sequence[str] = ()):
+def build_field(field: int, quadrants: Sequence[Tuple[int, int]], data_dir: Optional[str] = None, overwrite: bool = False, n_jobs: int = 1):
     """Steps 1 to 5 for one field. Writes ztf_<b>.parquet, ztf.parquet, ps1.parquet and merged.parquet under the field
     directory and returns (bands, ztf, ps1, merged). Each table holds only its own data plus the row indices of the
     tables it was made from (`{b}_idx` on ztf, `ztf_idx` / `ps1_idx` on merged)."""
     out = field_dir(field, data_dir)
     os.makedirs(out, exist_ok=True)
-    bands = {b: field_band(field, quadrants, b, data_dir, n_jobs=n_jobs, overwrite=overwrite, require=require) for b in BANDS}
+    bands = {b: field_band(field, quadrants, b, data_dir, n_jobs=n_jobs, overwrite=overwrite) for b in BANDS}
     for b, cat in bands.items():
         cat.to_parquet(os.path.join(out, f'ztf_{b}.parquet'))
     obj = merge_bands(bands)
-    obj = object_coverage(obj, field, quadrants, data_dir, n_jobs=n_jobs)
-    ps1, ps1_full = ps1_field(field, quadrants, data_dir, n_jobs=n_jobs)
+    full = ps1_partitions(field, quadrants, data_dir)
+    cov = ztf_coverage(np.r_[obj.ra.values, full.ra.values], np.r_[obj.dec.values, full.dec.values], field, quadrants, data_dir, n_jobs)   # one sweep over the images for both
+    obj = pd.concat([obj.reset_index(drop=True), cov.iloc[:len(obj)].drop(columns='on_image').reset_index(drop=True)], axis=1)
+    ps1, ps1_full = ps1_field(field, quadrants, data_dir, n_jobs=n_jobs, full=full, cov=cov.iloc[len(obj):].reset_index(drop=True))
     obj = pd.concat([obj, ps1_neighbourhood(obj.ra.values, obj.dec.values, ps1_full)], axis=1)   # what PS1 has at each ZTF object
     merged = merge_tables(bands, obj, ps1, match_ps1(obj, ps1))
     obj.to_parquet(os.path.join(out, 'ztf.parquet'))
@@ -551,10 +612,9 @@ if __name__ == '__main__':                                 # python -m Extractin
     ap.add_argument('--n-jobs', type=int, default=1)
     ap.add_argument('--overwrite', action='store_true')
     ap.add_argument('--data-dir', default=None)
-    ap.add_argument('--require', nargs='*', default=[], help='optional products that must be present, e.g. refunc')
     a = ap.parse_args()
     quads = field_quadrants(a.field, a.data_dir)
     print(f'field {a.field}: {len(quads)} quadrants', flush=True)
-    bands, obj, ps1, merged = build_field(a.field, quads, a.data_dir, overwrite=a.overwrite, n_jobs=a.n_jobs, require=a.require)
+    bands, obj, ps1, merged = build_field(a.field, quads, a.data_dir, overwrite=a.overwrite, n_jobs=a.n_jobs)
     print(f'done: ' + ', '.join(f'{b} {len(c):,}' for b, c in bands.items()) + f'; ZTF objects {len(obj):,}; PS1 {len(ps1):,}; '
           f'matched {int(((merged.ztf_idx >= 0) & (merged.ps1_idx >= 0)).sum()):,}; merged rows {len(merged):,}', flush=True)

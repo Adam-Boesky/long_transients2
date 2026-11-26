@@ -30,6 +30,7 @@ position, and both are kept as columns.
 """
 import glob
 import os
+from functools import lru_cache
 from typing import List, Optional, Sequence
 
 import hpgeom
@@ -55,35 +56,93 @@ MISSING = -999.0
 # PS1 3pi depths, from Chambers et al. 2016, "The Pan-STARRS1 Surveys", arXiv:1612.05560 (v4):
 #   - Table 11 ("3pi Steradian Survey Characteristics"): "5sigma single epoch" g 22.0, r 21.8, i 21.5 and "5sigma stack
 #     limit" g 23.3, r 23.2, i 23.1 mag; the abstract calls the latter "the mean 5sigma point source limiting
-#     sensitivities in the stacked 3pi Steradian Survey". Table 11 also lists the validated exposures per filter:
-#     g 60,528, r 70,918, i 104,414.
-#   - Sec. 3.2 ("The 3pi Steradian Survey"): "The total number of exposures per field per year is still 4"; sec. 6.2
-#     ("Variation of 3pi Steradian Survey Depth"): "by the design of the survey each pixel on the sky notionally has 12
-#     visits, in practice the coverage can be much more variable than this."
-# Taking the stack limit to be the depth at NOMINAL_VISITS frames is our assumption: the paper gives the stack limit as
-# a sky mean, not as a function of the number of frames.
-SINGLE_VISIT_5SIG = {'g': 22.0, 'r': 21.8, 'i': 21.5}
+#     sensitivities in the stacked 3pi Steradian Survey". A sky mean, kept as a reference line for the review notebooks;
+#     the pipeline's limit is each stack's own injection-recovery (below).
 STACK_5SIG = {'g': 23.3, 'r': 23.2, 'i': 23.1}
-NOMINAL_VISITS = 12
 
 
-def depth_scale(b: str) -> float:
-    """c in m(N) = m1 - 2.5 c log10(1/sqrt(N)), solved so that m(1) = SINGLE_VISIT_5SIG and m(NOMINAL_VISITS) =
-    STACK_5SIG: c = (m1 - m12) / (2.5 log10(1/sqrt(12))). c = 1 is pure sqrt(N) averaging of identical exposures; the
-    values are g 0.964, r 1.038 and i 1.186, i's above 1 consistent with i having ~1.5x the exposures of r (Table 11),
-    i.e. more than 12 frames behind its mean stack depth."""
-    return (SINGLE_VISIT_5SIG[b] - STACK_5SIG[b]) / (2.5 * np.log10(1 / np.sqrt(NOMINAL_VISITS)))
+# ----------------------------------------------------------------------------------------------- injection recovery
+
+# PS1's own injection-recovery test of every deep stack (Flewelling et al. 2020, ApJS 251, 7, StackDetEffMeta): nInjected
+# fake PSF sources per bin at 13 offsets from magref (= StackMeta.detectionThreshold, about the 50% point), countsNN of
+# them recovered by psphot's detection in that stack. One row per skycell and filter.
+DETEFF_OFFSETS = [f'offset{i:02d}' for i in range(1, 14)]
+DETEFF_COUNTS = [f'counts{i:02d}' for i in range(1, 14)]
+DETEFF_QUERY = ("select m.stackImageID, m.projectionID, m.skyCellID, m.filterID, m.crval1, m.crval2, m.nP2Images, m.detectionThreshold, "
+                "e.magref, e.nInjected, " + ', '.join(f'e.{o}, e.{c}' for o, c in zip(DETEFF_OFFSETS, DETEFF_COUNTS)) +
+                " from StackMeta m join StackDetEffMeta e on e.stackImageID = m.stackImageID "
+                "where m.stackTypeID = 1 and m.filterID <= 3 and m.projectionID >= {lo} and m.projectionID < {hi}")
+DETEFF_PROJCELLS = (635, 2644)         # projection cells of the 3pi deep stacks, [lo, hi)
+DETEFF_CHUNK = 100                     # projection cells per quick query (~30k rows, ~4 s; 300 exceeds the quick-job memory limit)
+FILTER_BAND = {1: 'g', 2: 'r', 3: 'i'}
 
 
-def stack_depth(n_frames: np.ndarray, b: str) -> np.ndarray:
-    """5-sigma point-source depth in band b of a PS1 stack of `n_frames` exposures (`{b}nFrames`): m1 - 2.5 c
-    log10(1/sqrt(N)), m1 = SINGLE_VISIT_5SIG and c from `depth_scale`, capped at STACK_5SIG (Chambers et al. 2016,
-    Table 11) so that the limit is never deeper than the published mean stack depth. Fewer than one frame, or none
-    known, gives the single-visit depth."""
-    n = np.asarray(n_frames, float)
-    n = np.where(n >= 1, n, 1.0)
-    depth = SINGLE_VISIT_5SIG[b] - 2.5 * depth_scale(b) * np.log10(1 / np.sqrt(n))
-    return np.minimum(depth, STACK_5SIG[b])
+def deteff_path(data_dir: Optional[str] = None) -> str:
+    return os.path.join(data_dir or get_data_path(), 'ps1', 'stack_deteff_gri.parquet')
+
+
+def fetch_stack_deteff(path: Optional[str] = None, retries: int = 5) -> pd.DataFrame:
+    """Download every 3pi deep gri stack's injection-recovery row (DETEFF_QUERY, ~600k rows) from MAST CasJobs to
+    `deteff_path`, as quick queries over DETEFF_CHUNK projection cells at a time (the long-job queue can sit for
+    hours; MAST's connection drops now and then, hence `retries` per chunk). Returns the table as `stack_deteff`
+    reads it."""
+    import time
+    from Source_Analysis.casjobs import MASTCASJOBS as J
+    path = path or deteff_path()
+    parts = []
+    for lo in range(DETEFF_PROJCELLS[0], DETEFF_PROJCELLS[1], DETEFF_CHUNK):
+        for attempt in range(retries):
+            try:
+                parts.append(J.quick(DETEFF_QUERY.format(lo=lo, hi=lo + DETEFF_CHUNK), task_name='stack_deteff').to_pandas()); break
+            except Exception as e:                         # a dropped connection or a busy server
+                if attempt == retries - 1:
+                    raise
+                time.sleep(30)
+    df = pd.concat(parts, ignore_index=True)
+    df['band'] = df.filterID.astype(int).map(FILTER_BAND)
+    for c in ('projectionID', 'skyCellID', 'filterID', 'nP2Images', 'nInjected'):
+        df[c] = df[c].astype(int)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    df.to_parquet(path + '.part'); os.replace(path + '.part', path)
+    stack_deteff.cache_clear()
+    return df
+
+
+@lru_cache(maxsize=None)
+def stack_deteff(path: Optional[str] = None) -> pd.DataFrame:
+    """The downloaded injection-recovery table (`fetch_stack_deteff`), one row per deep stack."""
+    return pd.read_parquet(path or deteff_path())
+
+
+def recovery_mag(table: pd.DataFrame, completeness: float) -> np.ndarray:
+    """Each stack's magnitude at recovered fraction `completeness`: magref plus the offset interpolated linearly
+    between the first bin whose fraction falls below it and the bin before. NaN where the fraction is below it already
+    in the brightest bin, or never falls below it."""
+    o = table[DETEFF_OFFSETS].to_numpy(float)
+    f = table[DETEFF_COUNTS].to_numpy(float) / table.nInjected.to_numpy(float)[:, None]
+    below = f < completeness
+    i = below.argmax(axis=1)
+    ok = below.any(axis=1) & (i > 0)
+    rows, i0, i1 = np.arange(len(table)), np.clip(i - 1, 0, None), i
+    with np.errstate(divide='ignore', invalid='ignore'):
+        off = o[rows, i0] + (f[rows, i0] - completeness) / (f[rows, i0] - f[rows, i1]) * (o[rows, i1] - o[rows, i0])
+    return np.where(ok, table.magref.to_numpy(float) + off, np.nan)
+
+
+@lru_cache(maxsize=None)
+def _recovery_lookup(completeness: float, path: Optional[str]) -> pd.Series:
+    t = stack_deteff(path)
+    code = t.filterID.to_numpy(np.int64) * 10_000_000 + t.projectionID.to_numpy(np.int64) * 100 + t.skyCellID.to_numpy(np.int64)
+    return pd.Series(recovery_mag(t, completeness), index=code).groupby(level=0).first()    # a stack rebuilt twice: one row
+
+
+def stack_recovery_mag(b: str, projcell: np.ndarray, skycell: np.ndarray, completeness: float, path: Optional[str] = None) -> np.ndarray:
+    """The band-b deep stack's `recovery_mag` at `completeness` for each (projection cell, skycell); NaN where no
+    stack has an injection row, or the cell is -1."""
+    filt = {v: k for k, v in FILTER_BAND.items()}[b]
+    proj, cell = np.asarray(projcell, np.int64), np.asarray(skycell, np.int64)
+    out = _recovery_lookup(completeness, path).reindex(filt * 10_000_000 + proj * 100 + cell).to_numpy(float)
+    return np.where((proj >= 0) & (cell >= 0), out, np.nan)
 
 
 def stack_dir(path: Optional[str] = None) -> str:

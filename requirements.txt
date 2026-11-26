@@ -32,6 +32,7 @@ duckdb==1.5.5
 pyarrow==21.0.0
 pandas==2.2.3
 numpy==1.26.4
+numba==0.60.0              # compiles the Kron photometry loop (Extracting.kron.measure_all)
 
 # ── cutout rendering ─────────────────────────────────────────────────────────
 # Cutouts are rendered server-side from FITS into PNG, so the image stack is a

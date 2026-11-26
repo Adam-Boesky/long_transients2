@@ -154,16 +154,6 @@ def test_objects_reads_the_covering_partitions_and_keeps_an_object_split_across_
         ps1_stack.objects(np.array([100.0]), np.array([0.0]), str(tmp_path))
 
 
-def test_stack_depth_runs_from_the_single_visit_depth_to_the_published_stack_depth_and_is_capped():
-    for b in BANDS:
-        m1, m12 = ps1_stack.SINGLE_VISIT_5SIG[b], ps1_stack.STACK_5SIG[b]
-        d = ps1_stack.stack_depth(np.array([np.nan, 0, 1, 4, 12, 40]), b)
-        assert d[:3] == pytest.approx([m1, m1, m1])                      # no or zero frames: the single-visit depth
-        assert d[4] == pytest.approx(m12) and d[5] == pytest.approx(m12)  # matches at 12 visits, capped beyond
-        assert m1 < d[3] < m12
-    assert [round(ps1_stack.depth_scale(b), 3) for b in BANDS] == [0.964, 1.038, 1.186]
-
-
 def test_each_band_records_the_skycell_its_row_came_from():
     out = clean({**row(1, 101, primary=1, phot_src=0, g=FORCED), 'skyCellID': 46}, {**row(1, 102, primary=0), 'skyCellID': 56})
     assert out.loc[1, 'g_skycell'] == 56 and out.loc[1, 'g_row'] == 102         # g from the detected secondary
