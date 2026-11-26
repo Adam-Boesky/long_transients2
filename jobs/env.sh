@@ -7,3 +7,4 @@ export LT_DATA=/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients2    
 export PS1_STACK_DIR=/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/panstarrs/stack_object/dataset
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1                                 # parallelism comes from --n-jobs / arrays
 mkdir -p "$LT_DATA/logs"
+export NUMBA_CACHE_DIR="${TMPDIR:-/tmp}/numba_cache_${SLURM_JOB_ID:-$$}"                           # per job: concurrent tasks race on the shared __pycache__ (Extracting.kron)
