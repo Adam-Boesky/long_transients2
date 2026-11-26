@@ -1539,7 +1539,9 @@ def _box_width_for_text(text: str, fontsize: float = 12.5, inches_per_unit: floa
 
 
 EXPLAIN_COLS = (['ra', 'dec', 'ztf_idx', 'ps1_idx', 'catalog', 'catalog_reason', 'outcome', 'point_source']
-                + [f'{b}_{c}' for b in BANDS for c in ('ztf_status', 'ps1_status', 'sigma', 'dropped_by')])
+                + [f'{b}_{c}' for b in BANDS for c in ('ztf_status', 'ps1_status', 'sigma', 'dropped_by')]
+                + [f'{b}_{side}_{c}' for b in BANDS for side in ('ztf', 'ps1') for c in ('psf', 'psf_err', 'kron', 'kron_err', 'snr')]
+                + [f'{b}_ps1_meas' for b in BANDS])                                       # what `band_photometry` reads
 
 
 def explain(field_id: int, ra: float, dec: float, data_dir: Optional[str] = None, max_arcsec: float = 2.0) -> Optional[pd.Series]:
