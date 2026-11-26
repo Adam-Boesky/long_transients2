@@ -1559,8 +1559,8 @@ def explain(field_id: int, ra: float, dec: float, data_dir: Optional[str] = None
     fmt = lambda v: f'{v:.2f}' if np.isfinite(v) else '-'
     print(f'field {field_id}: object {sep[i]:.2f}" from ({ra:.5f}, {dec:.5f})  ztf_idx {r.ztf_idx}  ps1_idx {r.ps1_idx}  '
           f'{"point" if r.point_source else "extended"}  catalog: {cat} ({r.catalog_reason})')
+    row = t.iloc[[i]]                                       # a one-row frame keeps the dtypes (`.to_frame().T` would not)
     for b in BANDS:
-        row = r.to_frame().T
         (zm, _, zs, _), (pm, _, ps, _) = band_photometry(row, b, 'ztf'), band_photometry(row, b, 'ps1')
         print(f'  {b}: ZTF {r[f"{b}_ztf_status"]} {fmt(zm[0])} (S/N {fmt(zs[0])}) | PS1 {r[f"{b}_ps1_status"]} {fmt(pm[0])} '
               f'(S/N {fmt(ps[0])}) | sigma {fmt(r[f"{b}_sigma"])} | {r[f"{b}_dropped_by"]}')
