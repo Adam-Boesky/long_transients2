@@ -43,7 +43,10 @@ unmatched PS1 object), and every band of it is judged in the same order, each st
      where no stack exists in the band or its recovery never reaches LIMIT_COMPLETENESS (survey edge, crowding), and
      such a band is uncovered by PS1 (`ps1_checks`): without a PS1 detection in it nothing is compared;
   4. confident (`real_checks`, object-wide): optionally a ZTF sharpness (`ztf_sharpness`) within
-     `sharp_max` for point sources; for in_ztf and in_pstarr, optionally no other object of either survey within
+     `sharp_max` for point sources; for in_ztf, where ZTF alone vouches for the object, optionally a point source's
+     profile: |sharp| within `in_ztf_sharp_max` and the median DAOPhot chi over its detections (`ztf_chi`) within
+     `in_ztf_chi_max` (ZTF's point-source locus; a ZTF-only object outside it is a DAOPhot shred of a galaxy's light,
+     which ALLSTAR subtracts only as a PSF at the galaxy's centre); for in_ztf and in_pstarr, optionally no other object of either survey within
      `isolation_arcsec` (`nearest_other_arcsec`, from the builder) nor inside a brighter object's Kron aperture (`neighbour_kron`): a
      one-sided object that close to another is most often a piece of the same light; for in_pstarr, PS1's own detection
      pass found the object in >= PS1_MIN_STACK_DETECTIONS stacks (nothing else vouches for it); for in_both and in_pstarr,
@@ -148,6 +151,8 @@ class Cuts:
     ps1_require_primary: bool = True          # a PS1 object with no stack row in its primary skycell (seen only in a neighbour's overlap) is X
     sharp_max: Optional[float] = 0.5          # drop objects whose S/N^2-weighted DAOPhot |sharp| exceeds this
     sharp_point_only: bool = True             # ... point sources only: extended objects are broad by nature
+    in_ztf_sharp_max: Optional[float] = 0.25  # drop in_ztf objects whose S/N^2-weighted |sharp| exceeds this (ZSDS: |sharp| <~ 0.5 for a point source) ...
+    in_ztf_chi_max: Optional[float] = 2.5     # ... or whose median DAOPhot chi over its ZTF detections exceeds this (ZSDS: chi <~ 1.5): off the point-source locus
     ps1_sky_max: Optional[float] = 1e-7       # a PS1 band with residual sky above this (Jy/arcsec^2) is untrustworthy
     ps1_min_nframes: Optional[int] = 4        # a PS1 band from a stack of fewer input frames is untrustworthy
     isolation_arcsec: Optional[float] = 3.0   # drop in_ztf / in_pstarr objects with any other object this close
@@ -161,7 +166,7 @@ class Cuts:
         return replace(self, **changes)
 
 
-NO_CUTS = Cuts(bright_star_mask=False, ztf_chi_max=None, ps1_chisq_max=None, ps1_require_primary=False, sharp_max=None, sharp_point_only=False, ps1_sky_max=None, ps1_min_nframes=None, isolation_arcsec=None,
+NO_CUTS = Cuts(bright_star_mask=False, ztf_chi_max=None, ps1_chisq_max=None, ps1_require_primary=False, sharp_max=None, sharp_point_only=False, in_ztf_sharp_max=None, in_ztf_chi_max=None, ps1_sky_max=None, ps1_min_nframes=None, isolation_arcsec=None,
                neighbour_kron=False, diffuse_excess=None, snr_keep=None, envelope_clip_mad=None)
 
 
@@ -1081,6 +1086,14 @@ def ztf_sharpness(src: pd.DataFrame) -> np.ndarray:
     return np.divide(num, den, out=np.full(len(src), np.nan), where=den > 0)
 
 
+def ztf_chi(src: pd.DataFrame) -> np.ndarray:
+    """One DAOPhot chi per object: the median over its ZTF detections. NaN without a ZTF detection."""
+    chi = np.column_stack([np.where(ztf_detected(src, b), src[f'{b}_ztf_chi'].values, np.nan) for b in BANDS])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)                   # all-NaN rows
+        return np.nanmedian(chi, axis=1)
+
+
 def sharpness_fails(src: pd.DataFrame, point: np.ndarray, cuts: Cuts = Cuts()) -> np.ndarray:
     """Objects whose S/N^2-weighted |sharp| exceeds `cuts.sharp_max`; with `cuts.sharp_point_only`, point sources only."""
     if cuts.sharp_max is None:
@@ -1094,7 +1107,12 @@ def real_checks(src: pd.DataFrame, catalog: int, cuts: Cuts = Cuts()) -> List[Tu
     PS1 vouches for the object, PS1's own detection pass must have found it in at least PS1_MIN_STACK_DETECTIONS stacks
     (our S/N can call a forced measurement D where that pass found nothing: a blend or an underestimated error); an
     in_both object has a ZTF detection vouching for it, and on field 860 the check removed only real faint objects
-    there. Where the PS1 side is a measurement (in_both, in_pstarr), neither BAD_STACK nor SUSPECT_STACK (qualityFlag:
+    there. For in_ztf, where ZTF alone vouches for the object, its profile must be a point source's: |sharp| at most
+    `cuts.in_ztf_sharp_max` and the median DAOPhot chi over its detections (`ztf_chi`) at most `cuts.in_ztf_chi_max`.
+    Nearly every ZTF-only object outside that locus is a DAOPhot shred of a galaxy (ALLSTAR subtracts a neighbour only
+    as a PSF at its centre, so a galaxy's remaining light is fit as more objects, broad and with large residuals);
+    calibrated on field 860's in_both point sources (99th percentiles |sharp| 0.25, chi 2.4 at S/N 10-20) and the
+    thresholds ZTF's own documentation and users apply to these columns. Where the PS1 side is a measurement (in_both, in_pstarr), neither BAD_STACK nor SUSPECT_STACK (qualityFlag:
     at most one good measurement). For in_ztf the PS1 side is a limit and these only say the object is faint there. For the one-sided catalogs the detecting survey's light must
     not be diffuse (`diffuse_light`): what one survey cannot see at all and the other sees only as an extended sheet is
     scattered light, not an object that appeared or vanished."""
@@ -1108,6 +1126,13 @@ def real_checks(src: pd.DataFrame, catalog: int, cuts: Cuts = Cuts()) -> List[Tu
     if sharp_max is not None:
         label = f'ZTF: S/N²-weighted |sharp| <= {sharp_max}' + (' (point sources)' if cuts.sharp_point_only else '')
         checks.append((label, ~sharpness_fails(src, src.point_source.values, cuts)))
+    if catalog == 1:                                                       # ZTF alone vouches for the object: a point source's profile
+        if cuts.in_ztf_sharp_max is not None:
+            checks.append((f'ZTF: S/N²-weighted |sharp| <= {cuts.in_ztf_sharp_max:g} (point-source locus)',
+                           ~(np.abs(ztf_sharpness(src)) > cuts.in_ztf_sharp_max)))
+        if cuts.in_ztf_chi_max is not None:
+            checks.append((f'ZTF: median DAOPhot chi <= {cuts.in_ztf_chi_max:g} (point-source locus)',
+                           ~(ztf_chi(src) > cuts.in_ztf_chi_max)))
     if catalog == 2:                                                       # PS1's own detection pass, where nothing else vouches for the object
         checks.append((f'PS1: nStackDetections >= {PS1_MIN_STACK_DETECTIONS}',
                        src.ps1_nStackDetections.values >= PS1_MIN_STACK_DETECTIONS))

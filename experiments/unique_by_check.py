@@ -136,6 +136,8 @@ def check_value(src: pd.DataFrame, label: str, b: str, i: int) -> str:
         return 'in a brighter Kron'
     if 'sharp' in label:
         return f'|sharp| {abs(ff.ztf_sharpness(src.iloc[[i]])[0]):.2f}'
+    if 'median DAOPhot chi' in label:
+        return f'chi {ff.ztf_chi(src.iloc[[i]])[0]:.2f}'
     if 'nStackDetections' in label:
         return f'nStack {int(r.ps1_nStackDetections)}'
     if 'STACK' in label:

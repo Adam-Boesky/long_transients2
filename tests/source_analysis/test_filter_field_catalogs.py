@@ -186,6 +186,24 @@ def test_the_sharpness_cut_is_object_wide_on_the_snr_weighted_mean():
     assert survivors(2, 0.5) == [False, False, True]                  # nothing to judge without a ZTF detection
 
 
+def test_in_ztf_needs_a_point_source_profile_and_the_other_catalogs_do_not():
+    rows = {'clean': object_row('DDD', 'LLL'), 'broad': {**object_row('DDD', 'LLL'), **{f'{b}_ztf_sharp': 0.3 for b in BANDS}},
+            'poor fit': {**object_row('DDD', 'LLL'), **{f'{b}_ztf_chi': 3.0 for b in BANDS}},
+            'poor fit in one band': {**object_row('DDD', 'LLL'), 'g_ztf_chi': 3.0},                     # the median over g, r, i is 1
+            'in_both, broad and poor': {**object_row('DDD', 'DDD'), **{f'{b}_ztf_sharp': 0.3 for b in BANDS}, **{f'{b}_ztf_chi': 3.0 for b in BANDS}}}
+    s = ff.assign_catalogs(pd.DataFrame(list(rows.values()), index=list(rows)), OFF)
+    assert list(s.catalog) == [1, 1, 1, 1, 0]
+    assert ff.ztf_chi(s) == pytest.approx([1.0, 1.0, 3.0, 1.0, 3.0])
+    cuts = OFF.replace(in_ztf_sharp_max=0.25, in_ztf_chi_max=2.5)
+    survive = lambda wf: list(sum(wf.mask(LAST_CONFIDENT(wf))[b] for b in BANDS) > 0)
+    ztf = ff.run_branch(s, 1, cuts)[1]
+    assert survive(ztf)[:4] == [True, False, False, True]
+    assert 'ZTF: S/N²-weighted |sharp| <= 0.25 (point-source locus)' in ztf.steps and 'ZTF: median DAOPhot chi <= 2.5 (point-source locus)' in ztf.steps
+    both = ff.run_branch(s, 0, cuts)[1]
+    assert survive(both)[4] and not any('point-source locus' in step for step in both.steps)
+    assert survive(ff.run_branch(s, 1, OFF)[1])[:4] == [True, True, True, True]
+
+
 def test_the_stack_flags_are_confident_checks_of_in_both_and_in_pstarr_and_do_not_touch_in_ztf():
     rows = {'suspect': {**object_row('DDD', 'DDD'), 'ps1_qualityFlag': ff.SUSPECT_STACK}, 'bad': {**object_row('DDD', 'DDD'), 'ps1_qualityFlag': ff.BAD_STACK},
             'clean': object_row('DDD', 'DDD'), 'ztf only, bad': {**object_row('DDD', 'LLL'), 'ps1_qualityFlag': ff.BAD_STACK}}
