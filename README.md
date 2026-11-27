@@ -7,7 +7,7 @@ flowchart TD
     IN["<b>Input</b><br/>one row per object: ZTF detections in g, r, i (DAOPhot + our Kron photometry)<br/>+ the matched PS1 stack object, or a PS1-only object"]
     Q["<b>1 · Quality</b> — per band, per survey<br/>is the data here usable?<br/><i>usable, or X</i>"]
     D["<b>2 · Detection</b> — per band, per usable side<br/>what does the survey have?<br/><i>D measured at S/N ≥ 5 · L measured below · U nothing: its limit stands in</i>"]
-    S["<b>3 · Comparison and sorting</b><br/>per band: (D, D) two-sided · (D, L/U) ZTF vs PS1 limit · (L/U, D) PS1 vs ZTF limit · an X or (L/U, L/U): nothing<br/>per object: ≥ 2 bands of one kind → <b>in_both</b> / <b>in_ztf</b> / <b>in_pstarr</b>, else not comparable (with the reason)"]
+    S["<b>3 · Comparison and sorting</b><br/>per band: (D, D) two-sided · (D, L/U) ZTF vs PS1 limit · (L/U, D) PS1 vs ZTF limit · an X or (L/U, L/U): nothing<br/>per object: ≥ 2 two-sided bands, or one two-sided band + bands where the other side is a sub-threshold measurement → <b>in_both</b> · ≥ 2 one-sided bands of one kind → <b>in_ztf</b> / <b>in_pstarr</b> · else not comparable (with the reason)"]
     CONF["<b>4 · Confident</b> — is it one real object?<br/>sharpness (point sources)<br/>in_ztf, in_pstarr: no object within 3″<br/>in_pstarr: PS1 nStackDetections ≥ 2<br/>in_both, in_pstarr: not BAD_STACK, not SUSPECT_STACK<br/>in_ztf, in_pstarr: the detecting survey's light not diffuse, (PSF − Kron − 0.5)/σ ≤ 3 in ≥ 2 bands"]
     POP["<b>5 · Population</b> — not Galactic<br/>no Gaia proper motion or parallax at 5σ"]
     CAL["<b>6 · Calibrate</b> on what is left<br/>each survey's 75 % point-source recovery limit per band (ZTF from the reference image's depth and noise ratio, PS1 from its injection-recovery test of the stack) · the Δmag envelope from the two-sided bands, one per morphology (PSF Δmag for point sources, Kron Δmag for extended objects)"]
@@ -22,7 +22,7 @@ Every band of every object ends step 3 with one of these on each survey's side:
 |---|---|
 | X | a quality check failed: this survey's side of the band is unusable, so the band compares nothing |
 | D | measured at S/N ≥ 5 |
-| L | measured below S/N 5: used if brighter than the survey's limit, else the limit stands in |
+| L | measured below S/N 5: used if brighter than the survey's limit or at S/N ≥ 3, else the limit stands in |
 | U | nothing measured: the survey's completeness limit stands in |
 
 The quality checks (step 1), each answering "is the data at this position sound?" and nothing about the object:

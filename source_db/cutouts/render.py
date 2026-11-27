@@ -226,9 +226,25 @@ def _viridis_lut() -> np.ndarray:
 BAD_RGB = (255, 255, 255)
 
 
+def bin_image(img: np.ndarray, k: int) -> np.ndarray:
+    """`img` summed over k x k blocks (NaN where a block has no data). At 0.25"/px a 6-sigma PanSTARRS source puts
+    about one sigma into its brightest pixel, so it is invisible at any stretch; binning 4 x 4 to ZTF-like 1" pixels
+    adds its pixels the way the catalog's PSF fit does. Trailing rows and columns that do not fill a block are dropped."""
+    if k <= 1:
+        return img
+    ny, nx = (img.shape[0] // k) * k, (img.shape[1] // k) * k
+    blocks = np.asarray(img[:ny, :nx], dtype=np.float64).reshape(ny // k, k, nx // k, k)
+    with np.errstate(invalid='ignore'):
+        out = np.nansum(blocks, axis=(1, 3))
+    out[np.isnan(blocks).all(axis=(1, 3))] = np.nan
+    return out
+
+
 def render_png(img: np.ndarray, stretch: str = DEFAULT_STRETCH,
-               percent: float = DEFAULT_PERCENT) -> bytes:
-    """Scale to bytes with `simple_norm` and encode as a paletted PNG."""
+               percent: float = DEFAULT_PERCENT, bin: int = 1) -> bytes:
+    """Scale to bytes with `simple_norm` and encode as a paletted PNG; `bin` > 1 sums the image over bin x bin
+    blocks first (`bin_image`)."""
+    img = bin_image(img, bin)
     from astropy.visualization import simple_norm
     from PIL import Image
 
@@ -296,15 +312,15 @@ def source_fingerprint(ra: float, dec: float, origin: object) -> str:
 
 
 def cache_path(source_uuid: str, survey: str, band: str, stretch: str,
-               percent: float, fingerprint: str = '') -> Path:
+               percent: float, fingerprint: str = '', bin: int = 1) -> Path:
     raw = (f'v{RENDER_VERSION}|{source_uuid}|{survey}|{band}'
-           f'|{stretch}|{percent}|{fingerprint}')
+           f'|{stretch}|{percent}|{fingerprint}' + (f'|bin{bin}' if bin > 1 else ''))     # unbinned keys unchanged: the precomputed cache stays valid
     key = hashlib.sha1(raw.encode()).hexdigest()
     # Default-stretch renders are the precomputed hot path -- roughly twelve
     # hours to rebuild at full scale -- so they live in their own subtree and
     # eviction clears everything else first. Two-character fan-out below
     # that, because a flat directory of a million PNGs is slow to stat.
-    tier = DEFAULT_TIER if is_default(stretch, percent) else ALT_TIER
+    tier = DEFAULT_TIER if is_default(stretch, percent) and bin <= 1 else ALT_TIER
     return CACHE_DIR / tier / key[:2] / f'{key}.png'
 
 

@@ -101,6 +101,8 @@ export function ClassifyPage({ member, schema }:
   // query params, so changing one just points the <img> somewhere else.
   const [stretch, setStretch] = useState('log')
   const [percent, setPercent] = useState(99.5)
+  // PanSTARRS stamps binned 4x4 by default: see CutoutGrid's `bin`.
+  const [bin, setBin] = useState(4)
   const [comment, setComment] = useState('')
   const [saved, setSaved] = useState('')
   // The comment saves on blur, and blur fires just before a click on a label
@@ -277,10 +279,10 @@ export function ClassifyPage({ member, schema }:
     // the light curve, and the browser can start fetching the JPEGs the
     // moment the addresses land.
     setCutouts(null)
-    getCutouts(uuid, { stretch, percent }, ac.signal).then(setCutouts)
+    getCutouts(uuid, { stretch, percent, bin }, ac.signal).then(setCutouts)
       .catch((e) => { if (!isAbort(e)) console.error(e) })
     return () => ac.abort()
-  }, [uuid, stretch, percent])
+  }, [uuid, stretch, percent, bin])
 
   useEffect(() => {
     if (!uuid) return
@@ -329,7 +331,7 @@ export function ClassifyPage({ member, schema }:
   // `AHEAD`/`BEHIND` in useLookahead). This, not raw query speed, is what
   // makes flipping feel instant.
   useLookahead(uuid, cutouts !== null && stampsSettled === cutouts,
-               (offset) => win.at(position + offset)?.source_uuid, stretch, percent)
+               (offset) => win.at(position + offset)?.source_uuid, stretch, percent, bin)
 
   /** The optical curve with the ztforce run folded in as another survey.
    *  `ztforce` is already in OPTICAL_SURVEYS and has a marker in the palette,
@@ -675,6 +677,7 @@ export function ClassifyPage({ member, schema }:
                           regions={cutouts?.regions ?? null}
                           stretch={stretch} onStretch={setStretch}
                           percent={percent} onPercent={setPercent}
+                          bin={bin} onBin={setBin}
                           links={imageLinks(shown.ra, shown.dec)}
                           onSettled={onStampsSettled} />
               <LightCurveChart lightcurve={lcWithZtforce} title="Optical"

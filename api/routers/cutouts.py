@@ -51,6 +51,7 @@ def _parse_origin(survey: str, origin: str):
 def get_cutouts(source_uuid: str,
                 stretch: str = Query(render.DEFAULT_STRETCH),
                 percent: float = Query(render.DEFAULT_PERCENT, gt=0, le=100),
+                bin: int = Query(1, ge=1, le=8),
                 sci: sqlite3.Connection = Depends(get_science)):
     """Image URLs for the source, by survey and band.
 
@@ -70,7 +71,7 @@ def get_cutouts(source_uuid: str,
     if row['ra'] is None or row['dec'] is None:
         return {'source_uuid': source_uuid, 'images': images, 'regions': QUERY_REGIONS}
 
-    qs = f'?stretch={quote(stretch)}&percent={percent}'
+    qs = f'?stretch={quote(stretch)}&percent={percent}' + (f'&bin={bin}' if bin > 1 else '')
     have = _origins(sci, source_uuid)
     for survey in SURVEYS:
         bands = sorted(b for s, b in have if s == survey)
@@ -86,7 +87,8 @@ def get_cutouts(source_uuid: str,
     # The radii everything about the source was gathered within, so the page
     # can draw each one on the stamps.
     return {'source_uuid': source_uuid, 'images': images,
-            'pixel_arcsec': {s: render.PIXEL_ARCSEC[s] for s in images},
+            # Binning applies to PanSTARRS only (ZTF's pixels are already 1"), so its scale grows with it.
+            'pixel_arcsec': {s: render.PIXEL_ARCSEC[s] * (bin if s == 'panstarrs' else 1) for s in images},
             'regions': QUERY_REGIONS}
 
 
@@ -94,6 +96,7 @@ def get_cutouts(source_uuid: str,
 def get_cutout_png(source_uuid: str, survey: str, band: str, request: Request,
                    stretch: str = Query(render.DEFAULT_STRETCH),
                    percent: float = Query(render.DEFAULT_PERCENT, gt=0, le=100),
+                   bin: int = Query(1, ge=1, le=8),
                    sci: sqlite3.Connection = Depends(get_science)):
     """One rendered postage stamp.
 
@@ -119,12 +122,13 @@ def get_cutout_png(source_uuid: str, survey: str, band: str, request: Request,
     if ident is None:
         raise HTTPException(404, f'no {survey} {band} image for {source_uuid}')
     ra, dec, origin = ident
+    k = bin if survey == 'panstarrs' else 1                  # ZTF pixels are 1" already
     path = render.cache_path(source_uuid, survey, band, stretch, percent,
-                             render.source_fingerprint(ra, dec, origin))
+                             render.source_fingerprint(ra, dec, origin), bin=k)
     try:
         with fetch.priority(background=_is_prefetch(request)):
             png = render.cached_or_render(
-                path, lambda: _render_cutout(survey, band, ra, dec, origin, stretch, percent))
+                path, lambda: _render_cutout(survey, band, ra, dec, origin, stretch, percent, k))
     except urllib.error.URLError as e:
         raise HTTPException(502, f'{survey} image service did not answer: {e}')
     if png is None:
@@ -263,9 +267,9 @@ def get_epoch_png(source_uuid: str, survey: str, band: str,
 
 
 def _render_cutout(survey: str, band: str, ra: float, dec: float, origin,
-                   stretch: str, percent: float) -> bytes | None:
+                   stretch: str, percent: float, bin: int = 1) -> bytes | None:
     img = (render.fetch_ztf(*origin, band, ra, dec) if survey == 'ztf'
            else render.fetch_ps1(ra, dec, origin))
     if img is None or img.size == 0:
         return None
-    return render.render_png(img, stretch, percent)
+    return render.render_png(img, stretch, percent, bin)

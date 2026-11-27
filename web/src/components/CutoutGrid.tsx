@@ -41,6 +41,11 @@ export interface CutoutGridProps {
   onStretch?: (s: string) => void
   percent?: number
   onPercent?: (p: number) => void
+  /** PanSTARRS stamps summed over bin x bin blocks (4: ZTF-like 1" pixels). A
+   *  faint source's light is spread over ~20 of PS1's 0.25" pixels, so it is
+   *  invisible at any stretch until the pixels are added up. */
+  bin?: number
+  onBin?: (b: number) => void
   /** Links to the surveys' own image viewers, rendered beside the controls:
    *  "show me more of this image" belongs with the images. */
   links?: { label: string; url: string; help?: string }[]
@@ -122,7 +127,7 @@ interface Magnified {
 
 export function CutoutGrid({ images, loading, catalog, pixelArcsec,
                             stretch, onStretch, percent, links,
-                            onPercent, regions, onSettled }: CutoutGridProps) {
+                            onPercent, bin, onBin, regions, onSettled }: CutoutGridProps) {
   // Which stamp the enlarge dialog is showing, if any. Enlarging one at a
   // time beats a full-screen view of all six: the thing you want a closer
   // look at is a single band, with the other five still there to compare.
@@ -173,6 +178,14 @@ export function CutoutGrid({ images, loading, catalog, pixelArcsec,
               {PERCENTS.map((p) => <option key={p} value={p}>{p}%</option>)}
             </select>
           </>
+        )}
+        {onBin && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                 title="Sum PanSTARRS pixels 4x4 to ZTF-like 1&quot; pixels: a faint source is spread over ~20 of PS1's 0.25&quot; pixels and invisible at any stretch until they are added">
+            <input type="checkbox" checked={(bin ?? 1) > 1}
+                   onChange={(e) => onBin(e.target.checked ? 4 : 1)} />
+            binned PS1
+          </label>
         )}
         {/* Pushed right so the stretch controls stay where the eye expects
             them and the archive links read as a separate action. */}

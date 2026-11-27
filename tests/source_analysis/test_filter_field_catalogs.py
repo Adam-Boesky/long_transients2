@@ -45,9 +45,10 @@ def object_row(ztf: str, ps1: str, n_stack_detections: int = 3) -> dict:
 # (ZTF g r i, PS1 g r i, catalog, comparison per band, survives the >= 2 band rule); the numbers are the cases we discussed
 CASES = {
     '1':  ('DDD', 'DDD', 0, (0, 0, 0), True),
-    '2':  ('DDD', 'DLL', -1, (-1, -1, -1), False),
+    '2':  ('DDD', 'DLL', 0, (0, 1, 1), True),                                  # one two-sided band + D/L bands: in_both, the D/L bands against the forced flux or limit
+    '2 D/U': ('DDD', 'D--', -1, (-1, -1, -1), False),                           # ... but D/U bands (no PS1 object) do not count: one two-sided band
     '3 no PS1 measurement': ('DDD', 'DMM', -1, (-1, -1, -1), False),
-    '3 forced flux <= 0':   ('DDD', 'DFF', -1, (-1, -1, -1), False),
+    '3 forced flux <= 0':   ('DDD', 'DFF', 0, (0, 1, 1), True),                 # a forced flux <= 0 is still a measurement (L): in_both, those bands against the limit
     '4':  ('DDD', 'LLL', 1, (1, 1, 1), True),
     '4 mirrored': ('LLL', 'DDD', 2, (2, 2, 2), True),
     '5':  ('LDD', 'DDD', 0, (-1, 0, 0), True),
@@ -126,11 +127,12 @@ def test_one_sided_bands_use_the_sub_threshold_measurement_where_brighter_than_t
     assert p[0] == s.loc['forced <= 0', 'r_ps1_rec75_limit'] and pe[0] == 0 and s.loc['forced <= 0', 'r_cat'] == 1
 
 
-def test_an_in_both_object_drops_its_one_sided_bands_and_the_limit_is_never_used_for_it(src):
+def test_an_in_both_object_drops_its_d_u_bands_and_keeps_d_l_bands_beside_a_single_two_sided_one(src):
     for case, band in (('5', 'g'), ('6', 'g')):
         assert src.loc[case, 'catalog'] == 0 and src.loc[case, f'{band}_cat'] == -1
-    for case in ('2', '3 forced flux <= 0'):                                       # one two-sided band left: not comparable, no limit used
-        assert src.loc[case, 'catalog'] == -1 and src.loc[case, 'catalog_reason'] == 'one two-sided band'
+    for case in ('2', '3 forced flux <= 0'):                                       # one two-sided band + D/L bands: in_both, the D/L bands kept
+        assert src.loc[case, 'catalog'] == 0 and tuple(src.loc[case, [f'{b}_cat' for b in BANDS]]) == (0, 1, 1)
+    assert src.loc['2 D/U', 'catalog'] == -1 and src.loc['2 D/U', 'catalog_reason'] == 'one two-sided band'
     z = ff.compared_magnitudes(src.loc[['6']], 'g')[0][0]
     assert z != src.loc['6', 'g_ztf_rec75_limit'] or np.isnan(z)
 
@@ -636,3 +638,13 @@ def test_the_envelope_clip_follows_a_rolling_median_and_removes_only_far_outlier
     s = ff.assign_catalogs(pd.DataFrame(rows), OFF)
     keep = ff.clip_envelope_sample(s, {b: np.ones(n, bool) for b in BANDS}, 5.0)['g']
     assert not keep[:20].any() and keep[20:].mean() > 0.999                                    # the outliers go, the population stays
+
+
+def test_a_sub_threshold_measurement_at_three_sigma_is_compared_even_when_fainter_than_the_limit(src):   # `src` for its stack-limit patch
+    rows = {'forced 4 sigma, fainter than the limit': object_row('DDD', 'LLL'), 'forced 2 sigma, fainter than the limit': object_row('DDD', 'LLL')}
+    for b in BANDS:                                                              # PS1 limit 22.0 (STACK_M90): forced fluxes at 22.5
+        rows['forced 4 sigma, fainter than the limit'].update({f'{b}_ps1_flux': 3.8e-6, f'{b}_ps1_flux_err': 0.95e-6, f'{b}_ps1_snr': 4.0, f'{b}_ps1_psf': 22.45})
+        rows['forced 2 sigma, fainter than the limit'].update({f'{b}_ps1_flux': 3.8e-6, f'{b}_ps1_flux_err': 1.9e-6, f'{b}_ps1_snr': 2.0, f'{b}_ps1_psf': 22.45})
+    s = ff.assign_catalogs(pd.DataFrame(list(rows.values()), index=list(rows)), OFF)
+    assert list(s.catalog) == [1, 1]
+    assert s.loc['forced 4 sigma, fainter than the limit', 'g_ps1_use_forced'] and not s.loc['forced 2 sigma, fainter than the limit', 'g_ps1_use_forced']

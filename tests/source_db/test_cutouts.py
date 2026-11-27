@@ -556,3 +556,14 @@ def test_prefetch_header_runs_the_render_as_background(cutout_client, monkeypatc
     cutout_client.get(f'/api/sources/{UUID}/cutout/ztf/g.png', headers={'X-Prefetch': '1'})
     cutout_client.get(f'/api/sources/{UUID}/cutout/ztf/r.png')
     assert seen == [True, False]
+
+
+def test_bin_image_sums_blocks_and_keeps_the_cache_key_of_unbinned_stamps():
+    img = np.arange(16, dtype=float).reshape(4, 4); img[0, 0] = np.nan
+    out = render.bin_image(img, 2)
+    assert out.shape == (2, 2) and out[0, 0] == 1 + 4 + 5 and out[1, 1] == 10 + 11 + 14 + 15     # NaN ignored inside a block
+    assert np.isnan(render.bin_image(np.full((2, 2), np.nan), 2)).all()                          # ... but a block with no data is NaN
+    assert render.bin_image(img, 1) is img
+    assert render.cache_path(UUID, 'panstarrs', 'g', 'log', 99.5) == render.cache_path(UUID, 'panstarrs', 'g', 'log', 99.5, bin=1)
+    assert render.cache_path(UUID, 'panstarrs', 'g', 'log', 99.5, bin=4) != render.cache_path(UUID, 'panstarrs', 'g', 'log', 99.5)
+    assert render.ALT_TIER in str(render.cache_path(UUID, 'panstarrs', 'g', 'log', 99.5, bin=4))

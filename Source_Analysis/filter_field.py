@@ -31,8 +31,11 @@ unmatched PS1 object), and every band of it is judged in the same order, each st
      against PS1 (D, D); 1 ZTF against the PS1 limit (D with L or U; a forced PS1 measurement brighter than the limit
      is used instead); 2 PS1 against the ZTF limit (L or U with D); -1 nothing (an X, or neither side D). The object's
      catalog (`object_catalog`) is the kind its bands carry: at least two two-sided bands -> `in_both` (its one-sided
-     bands are dropped); else at least two one-sided bands all of one kind -> `in_ztf` / `in_pstarr`; anything else is
-     not comparable (-1, `catalog_reason`) and leaves here. Each survey's limit is the magnitude at which it recovers
+     bands are dropped), or one two-sided band with at least one D/L band (the undetected side still a measurement:
+     the forced flux stands in, brighter than the limit or at S/N >= FORCED_SNR_MIN, else the limit; a D/U band says
+     the survey has no object there, which can be a catalog miss, and is dropped) -> `in_both`; else at least two
+     one-sided bands all of one kind and no two-sided band -> `in_ztf` / `in_pstarr`; anything else is not comparable
+     (-1, `catalog_reason`) and leaves here. Each survey's limit is the magnitude at which it recovers
      a fraction LIMIT_COMPLETENESS of point sources (`completeness_limits`). ZTF's follows from its image
      (`ztf_recovery_mag`: the catalog's 5-sigma depth and the ratio of the real to the modelled pixel noise, from the
      builder's depth columns). PS1's is read off its own injection-recovery test of the deep stack the band is judged
@@ -105,6 +108,7 @@ CATALOG = {0: 'in_both', 1: 'in_ztf', 2: 'in_pstarr'}
 NOT_COMPARABLE = 'not comparable'   # objects with no catalog (-1): fewer than two comparable bands, or of mixed kinds
 REASONS = ('fewer than two measured bands', 'no comparable band', 'one comparable band', 'one two-sided band', 'mixed one-sided kinds')
 SNR_MIN = 5.0                   # sorts each side into detected (D) or not (L): sets catalogs and comparisons
+FORCED_SNR_MIN = 3.0            # a sub-threshold measurement (L) at this S/N is compared as a measurement even when fainter than the limit
 SIGMA_BOUNDARY = 3.0
 PSF_KRON_CUT = 0.05             # literature point/extended cut on PSF - Kron (Chambers et al. 2016)
 PSF_KRON_NSIGMA = 3.0           # extended if the combined excess over the cut exceeds this many sigma
@@ -437,14 +441,24 @@ def comparison(z: np.ndarray, p: np.ndarray) -> np.ndarray:
     return out
 
 
-def object_catalog(cats: Dict[str, np.ndarray], n_measured: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def object_catalog(cats: Dict[str, np.ndarray], n_measured: np.ndarray,
+                   status: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None) -> Tuple[np.ndarray, np.ndarray]:
     """(catalog, reason) from the kind of comparison each band carries (`comparison`): 0 in_both with at least two
-    two-sided bands (its one-sided bands are dropped), 1 in_ztf / 2 in_pstarr with at least two one-sided bands all
-    of that kind, else -1 (not comparable) with the reason (REASONS): fewer than two measured bands, no comparable
-    band, one comparable band, one two-sided band, or one-sided bands of mixed kinds."""
+    two-sided bands (its one-sided bands are dropped), or with one two-sided band and at least one band whose
+    undetected side is still a measurement (`status` (ZTF, PS1) per band: D/L or L/D, the survey measured the
+    position; a D/U or U/D band says the survey has no object there, which can be a catalog miss, and never counts);
+    1 in_ztf / 2 in_pstarr with at least two one-sided bands all of that kind and no two-sided band; else -1 (not
+    comparable) with the reason (REASONS): fewer than two measured bands, no comparable band, one comparable band,
+    one two-sided band, or one-sided bands of mixed kinds."""
     n_two = sum((cats[b] == 0).astype(int) for b in BANDS)
     n_z, n_p = sum((cats[b] == 1).astype(int) for b in BANDS), sum((cats[b] == 2).astype(int) for b in BANDS)
-    catalog = np.select([n_two >= 2, (n_two == 0) & (n_z >= 2) & (n_p == 0), (n_two == 0) & (n_p >= 2) & (n_z == 0)], [0, 1, 2], -1).astype(np.int8)
+    if status is not None:                                                # one-sided bands whose undetected side is a measurement
+        n_zl = sum(((cats[b] == 1) & (status[b][1] == 'L')).astype(int) for b in BANDS)
+        n_pl = sum(((cats[b] == 2) & (status[b][0] == 'L')).astype(int) for b in BANDS)
+    else:
+        n_zl = n_pl = np.zeros(len(n_two), int)
+    both_mixed = (n_two == 1) & (((n_zl >= 1) & (n_p == 0)) | ((n_pl >= 1) & (n_z == 0)))
+    catalog = np.select([n_two >= 2, both_mixed, (n_two == 0) & (n_z >= 2) & (n_p == 0), (n_two == 0) & (n_p >= 2) & (n_z == 0)], [0, 0, 1, 2], -1).astype(np.int8)
     reason = np.select([catalog >= 0, n_measured < 2, n_two == 1, (n_z > 0) & (n_p > 0), n_z + n_p == 1],
                        ['', REASONS[0], REASONS[3], REASONS[4], REASONS[2]], REASONS[1])
     return catalog, reason
@@ -507,9 +521,11 @@ def assign_catalogs(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
     (`compared_magnitudes`, `band_photometry`); `catalog` and `catalog_reason` from `object_catalog`. An in_both object keeps only its
     two-sided bands (`{b}_cat` 0); its one-sided bands are dropped (-1), as is every band of an object that is not
     comparable. On the undetected side of a one-sided band, either survey uses its own sub-threshold measurement
-    where it has one brighter than its limit (`{b}_ps1_use_forced`, `{b}_ztf_use_meas` True; PS1's forced photometry,
-    a ZTF detection under SNR_MIN), else the limit (`{b}_ps1_rec75_limit`, `{b}_ztf_rec75_limit`). A measurement, however noisy, says more
-    than a limit deeper than it.
+    where it has one brighter than its limit or at S/N >= FORCED_SNR_MIN (`{b}_ps1_use_forced`, `{b}_ztf_use_meas`
+    True; PS1's forced photometry, a ZTF detection under SNR_MIN), else the limit (`{b}_ps1_rec75_limit`,
+    `{b}_ztf_rec75_limit`). A measurement brighter than the limit says more than the limit; one at a few sigma is a
+    measurement of the source, however faint, where the limit would only bound it. An in_both object with a single
+    two-sided band keeps its D/L bands, compared the same way (its D/U bands, where PS1 has no object, are dropped).
 
     Extended objects (`point_source`) are judged on Kron photometry throughout, point sources on PSF; a side without
     the morphology's photometry is unmeasured there. `run_branch` drops objects left with fewer than two compared bands."""
@@ -518,15 +534,17 @@ def assign_catalogs(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
     status = {b: band_status(src, b, point, cuts) for b in BANDS}
     raw = {b: comparison(z, p) for b, (z, p) in status.items()}
     n_measured = sum((ztf_detected(src, b) | src[f'{b}_ps1_meas'].values).astype(int) for b in BANDS)
-    catalog, reason = object_catalog(raw, n_measured)
+    catalog, reason = object_catalog(raw, n_measured, status)
+    n_two = sum((raw[b] == 0).astype(int) for b in BANDS)
     cols = {'catalog': catalog, 'catalog_reason': reason, 'point_source': point}
     for b, (z, p) in status.items():
         cat = raw[b].copy()
-        cat[(catalog == 0) & (cat > 0)] = -1                  # in_both: two-sided bands only
+        keep_l = (n_two == 1) & (((cat == 1) & (p == 'L')) | ((cat == 2) & (z == 'L')))     # an in_both with one two-sided band keeps its D/L bands
+        cat[(catalog == 0) & (cat > 0) & ~keep_l] = -1        # in_both: two-sided bands, plus D/L bands beside a single two-sided one
         cat[catalog < 0] = -1                                 # not comparable: nothing is compared
-        z_mag, p_mag = band_photometry(src, b, 'ztf', point)[0], band_photometry(src, b, 'ps1', point)[0]
-        forced = (cat == 1) & (p == 'L') & np.isfinite(p_mag) & (p_mag < src[limit_col('ps1', b)].values)
-        z_meas = (cat == 2) & (z == 'L') & np.isfinite(z_mag) & (z_mag < src[limit_col('ztf', b)].values)
+        (z_mag, _, z_snr, _), (p_mag, _, p_snr, _) = band_photometry(src, b, 'ztf', point), band_photometry(src, b, 'ps1', point)
+        forced = (cat == 1) & (p == 'L') & np.isfinite(p_mag) & ((p_mag < src[limit_col('ps1', b)].values) | (p_snr >= FORCED_SNR_MIN))
+        z_meas = (cat == 2) & (z == 'L') & np.isfinite(z_mag) & ((z_mag < src[limit_col('ztf', b)].values) | (z_snr >= FORCED_SNR_MIN))
         cols.update({
             f'{b}_ztf_status': z, f'{b}_ps1_status': p, f'{b}_cat': cat,
             f'{b}_extendedness': extendedness(src, b),

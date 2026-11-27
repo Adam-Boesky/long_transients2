@@ -38,7 +38,7 @@ const OFFSETS = Array.from({ length: Math.max(AHEAD, BEHIND) }, (_, i) => i + 1)
 /** `neighbour(offset)` is the source that many places from the one shown. */
 export function useLookahead(current: string | undefined, ready: boolean,
                              neighbour: (offset: number) => string | undefined,
-                             stretch: string, percent: number) {
+                             stretch: string, percent: number, bin: number = 1) {
   const settled = useRef(new Set<string>())
   const flights = useRef(new Map<string, Flight>())
   // A primitive, so a new array with the same sources does not restart it.
@@ -47,7 +47,7 @@ export function useLookahead(current: string | undefined, ready: boolean,
 
   useEffect(() => {
     // Stamps differ per stretch, so the owner of a URL carries it.
-    const owner = (uuid: string) => `${uuid}|${stretch}|${percent}`
+    const owner = (uuid: string) => `${uuid}|${stretch}|${percent}|${bin}`
     const keep = new Set([...order, ...(current ? [current] : [])].map(owner))
     for (const [url, f] of flights.current) {
       if (!keep.has(f.owner)) {
@@ -82,7 +82,7 @@ export function useLookahead(current: string | undefined, ready: boolean,
       for (const uuid of order) {
         let urls = [lightCurveUrl(uuid)]
         try {
-          const c = await getCutouts(uuid, { stretch, percent })
+          const c = await getCutouts(uuid, { stretch, percent, bin })
           urls = urls.concat(Object.values(c.images).flatMap((bands) => Object.values(bands)))
         } catch { /* the page reports it if this source is opened */ }
         if (stale) return
@@ -92,7 +92,7 @@ export function useLookahead(current: string | undefined, ready: boolean,
     }
     const timer = globalThis.setTimeout(() => void run(), ready ? 0 : FALLBACK_MS)
     return () => { stale = true; globalThis.clearTimeout(timer) }
-  }, [current, ready, orderKey, stretch, percent])  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [current, ready, orderKey, stretch, percent, bin])  // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => () => {
     for (const f of flights.current.values()) f.ac.abort()

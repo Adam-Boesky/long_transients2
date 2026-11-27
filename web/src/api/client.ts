@@ -190,12 +190,12 @@ export const getSpectra = (uuid: string, signal?: AbortSignal) =>
  * back from a stale cache.
  */
 export function getCutouts(uuid: string,
-                           opts: { stretch?: string; percent?: number } = {},
+                           opts: { stretch?: string; percent?: number; bin?: number } = {},
                            signal?: AbortSignal): Promise<Cutouts> {
   // Fetched once per session: a listing only changes with a catalog rebuild,
   // and the page and the lookahead both ask for it. Shared, so not tied to
   // any one caller's signal; a failure is forgotten so it can be retried.
-  const key = `${uuid}|${opts.stretch ?? ''}|${opts.percent ?? ''}`
+  const key = `${uuid}|${opts.stretch ?? ''}|${opts.percent ?? ''}|${opts.bin ?? ''}`
   let listing = cutoutListings.get(key)
   if (!listing) {
     listing = get<Cutouts>(`/api/sources/${encodeURIComponent(uuid)}/cutouts`,
