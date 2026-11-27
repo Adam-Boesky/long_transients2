@@ -77,7 +77,7 @@ STACK_M90 = 22.0                  # the stand-in injection-recovery magnitude of
 
 @pytest.fixture(scope='module', autouse=True)
 def stack_recovery():
-    """PS1's injection table is not on disk in tests: every stack recovers 90% at STACK_M90 (module scope, for `src`)."""
+    """PS1's injection table is not on disk in tests: every stack recovers LIMIT_COMPLETENESS at STACK_M90 (module scope, for `src`)."""
     mp = pytest.MonkeyPatch()
     mp.setattr(ff.ps1_stack, 'stack_recovery_mag', lambda b, proj, cell, p, path=None: np.where(np.asarray(proj) >= 0, STACK_M90, np.nan))
     yield
@@ -112,18 +112,18 @@ def test_a_flagged_ps1_band_is_never_read_as_a_non_detection(src):
     z, p = ff.band_status(src.loc[['8']], 'i', np.array([True]))
     assert (z[0], p[0]) == ('D', 'X')
     assert ff.detection_status(src.loc[['8']], 'i')[1][0] == 'D' and not ff.usable_sides(src.loc[['8']], 'i', np.array([True]))[1][0]   # a measurement, on an unusable side
-    assert ff.compared_magnitudes(src.loc[['8']], 'i')[2][0] != src.loc['8', 'i_ps1_rec90_limit']
+    assert ff.compared_magnitudes(src.loc[['8']], 'i')[2][0] != src.loc['8', 'i_ps1_rec75_limit']
 
 
 def test_one_sided_bands_use_the_sub_threshold_measurement_where_brighter_than_the_limit(src):
     used = lambda case, b: ff.compared_magnitudes(src.loc[[case]], b)                                                 # (ztf, ztf_err, ps1, ps1_err)
     assert used('4', 'g')[2][0] == 20.0 and used('4', 'g')[3][0] > 0 and src.loc['4', 'g_ps1_use_forced']                   # PS1 'L' with a forced mag
-    assert used('10', 'g')[2][0] == src.loc['10', 'g_ps1_rec90_limit'] and not src.loc['10', 'g_ps1_use_forced']                                       # no PS1 object: the limit
+    assert used('10', 'g')[2][0] == src.loc['10', 'g_ps1_rec75_limit'] and not src.loc['10', 'g_ps1_use_forced']                                       # no PS1 object: the limit
     assert used('4 mirrored', 'g')[0][0] == 20.0 and used('4 mirrored', 'g')[1][0] > 0 and src.loc['4 mirrored', 'g_ztf_use_meas']   # ZTF 'L', symmetric
     assert used('13', 'g')[0][0] == pytest.approx(ff.ztf_recovery_mag(21.0, 1.0, 1.0), abs=1e-5) and used('13', 'g')[1][0] == 0   # no detection: the recovery limit of the image, not MAGLIM
     s = ff.assign_catalogs(pd.DataFrame([object_row('DDD', 'LFF')], index=['forced <= 0']), OFF)                        # in_ztf, no magnitude in r, i: the limit
     z, ze, p, pe = ff.compared_magnitudes(s, 'r')
-    assert p[0] == s.loc['forced <= 0', 'r_ps1_rec90_limit'] and pe[0] == 0 and s.loc['forced <= 0', 'r_cat'] == 1
+    assert p[0] == s.loc['forced <= 0', 'r_ps1_rec75_limit'] and pe[0] == 0 and s.loc['forced <= 0', 'r_cat'] == 1
 
 
 def test_an_in_both_object_drops_its_one_sided_bands_and_the_limit_is_never_used_for_it(src):
@@ -132,10 +132,10 @@ def test_an_in_both_object_drops_its_one_sided_bands_and_the_limit_is_never_used
     for case in ('2', '3 forced flux <= 0'):                                       # one two-sided band left: not comparable, no limit used
         assert src.loc[case, 'catalog'] == -1 and src.loc[case, 'catalog_reason'] == 'one two-sided band'
     z = ff.compared_magnitudes(src.loc[['6']], 'g')[0][0]
-    assert z != src.loc['6', 'g_ztf_rec90_limit'] or np.isnan(z)
+    assert z != src.loc['6', 'g_ztf_rec75_limit'] or np.isnan(z)
 
 
-def test_an_object_whose_ps1_side_is_a_measurement_needs_two_stack_detections():
+def test_an_in_pstarr_object_needs_two_ps1_stack_detections_and_in_both_does_not():
     rows = {'in_pstarr, 1 detection': object_row('---', 'DDD', 1), 'in_pstarr, 2 detections': object_row('---', 'DDD', 2),
             'in_both, 1 detection': object_row('DDD', 'DDD', 1), 'in_both, 2 detections': object_row('DDD', 'DDD', 2),
             'in_ztf, 1 detection': object_row('DDD', 'LLL', 1)}
@@ -144,7 +144,7 @@ def test_an_object_whose_ps1_side_is_a_measurement_needs_two_stack_detections():
         wf = ff.run_branch(s, catalog, OFF)[1]
         return sum(wf.mask(LAST_CONFIDENT(wf))[b] for b in BANDS) > 0
     assert list(survivors(2)) == [False, True, False, False, False]
-    assert list(survivors(0)) == [False, False, False, True, False]
+    assert list(survivors(0)) == [False, False, True, True, False]                  # in_both: ZTF vouches for it, no stack-detection test
     assert list(survivors(1)) == [False, False, False, False, True]                  # in_ztf: the PS1 side is a limit, no stack test
 
 
@@ -314,27 +314,27 @@ def test_the_ztf_recovery_magnitude_follows_the_image_depth_and_noise_ratio():
 def test_completeness_limits_read_each_survey_off_its_own_image(monkeypatch):
     s, mag, rec = _reference_field(np.random.default_rng(0))
     out = ff.completeness_limits(s, OFF)
-    assert (out.g_ps1_rec90_limit == STACK_M90).all()
-    assert np.allclose(out.g_ztf_rec90_limit, ff.ztf_recovery_mag(23.3, 1.0, 1.0), atol=1e-5)
+    assert (out.g_ps1_rec75_limit == STACK_M90).all()
+    assert np.allclose(out.g_ztf_rec75_limit, ff.ztf_recovery_mag(23.3, 1.0, 1.0), atol=1e-5)
     ext, _, _ = _reference_field(np.random.default_rng(0), kron_offset=0.5)    # the references' morphology is irrelevant to either
-    assert ff.completeness_limits(ext, OFF)[['g_ps1_rec90_limit', 'g_ztf_rec90_limit']].equals(out[['g_ps1_rec90_limit', 'g_ztf_rec90_limit']])
+    assert ff.completeness_limits(ext, OFF)[['g_ps1_rec75_limit', 'g_ztf_rec75_limit']].equals(out[['g_ps1_rec75_limit', 'g_ztf_rec75_limit']])
     per_cell = lambda b, proj, cell, p, path=None: np.where(np.asarray(cell) == 7, 21.5, np.nan)    # only skycell 7 reaches 90%
     monkeypatch.setattr(ff.ps1_stack, 'stack_recovery_mag', per_cell)
     s.loc[s.index[:10], 'g_ps1_skycell'] = 7
-    lim = ff.completeness_limits(s, OFF).g_ps1_rec90_limit
+    lim = ff.completeness_limits(s, OFF).g_ps1_rec75_limit
     assert (lim.iloc[:10] == 21.5).all() and lim.iloc[10:].isna().all()                             # no stand-in: the others are uncovered
 
 
-def test_a_band_whose_stack_never_reaches_90_percent_is_uncovered_by_ps1(monkeypatch):
+def test_a_band_whose_stack_never_reaches_the_completeness_is_uncovered_by_ps1(monkeypatch):
     rows = {'ztf only': object_row('DDD', '---'), 'ps1 forced only in g': object_row('DDD', 'LDD'), 'ps1 detected in g': object_row('DDD', 'DDD')}
     s = pd.DataFrame(list(rows.values()), index=list(rows))
     s.loc[:, 'g_ps1_skycell'] = 7
     monkeypatch.setattr(ff.ps1_stack, 'stack_recovery_mag', lambda b, proj, cell, p, path=None: np.where((np.asarray(cell) == 7) & (b == 'g'), np.nan, STACK_M90))
-    label = 'PS1: stack reaches 90% at the position'
+    label = f'PS1: stack reaches {100 * ff.LIMIT_COMPLETENESS:g}% at the position'
     assert list(dict(ff.ps1_checks(s, 'g', ff.point_source(s), OFF))[label]) == [False, False, True]                 # waived only for a PS1 detection in the band
     assert dict(ff.ps1_checks(s, 'r', ff.point_source(s), OFF))[label].all()
     out = ff.assign_catalogs(s, OFF)
-    assert list(out.g_ps1_status) == ['X', 'X', 'D'] and out.g_ps1_rec90_limit.isna().all()
+    assert list(out.g_ps1_status) == ['X', 'X', 'D'] and out.g_ps1_rec75_limit.isna().all()
     assert list(out.r_ps1_status) == ['U', 'D', 'D'] and list(out.catalog) == [1, 0, 0]            # r and i still carry the first object
 
 
@@ -382,7 +382,7 @@ def test_a_band_records_whether_it_compares_psf_or_kron_and_the_magnitudes_follo
     out = ff.assign_catalogs(table, OFF)
     assert list(out.loc[['point', 'extended'], 'point_source']) == [True, False]
     z, _, p, _ = ff.compared_magnitudes(out.loc[['point', 'extended']], 'g')
-    assert list(z) == [20.0, 19.0] and list(p) == list(out.loc[['point', 'extended'], 'g_ps1_rec90_limit'])    # in_ztf: the PS1 side is the limit
+    assert list(z) == [20.0, 19.0] and list(p) == list(out.loc[['point', 'extended'], 'g_ps1_rec75_limit'])    # in_ztf: the PS1 side is the limit
 
 
 def test_annotate_neighbours_kron_containment_is_against_brighter_objects_only():
@@ -431,7 +431,7 @@ def test_a_limit_only_supports_a_change_in_the_direction_it_constrains():
     rows['in_ztf against a forced measurement'].update({f'{b}_ps1_psf': 20.5 for b in BANDS})       # ZTF 20: fainter in PS1, two-sided
     s = ff.assign_catalogs(pd.DataFrame(list(rows.values()), index=list(rows)), OFF)
     out = ff.annotate_sigma(s, {m: {b: Env() for b in BANDS} for m in ff.MORPHOLOGIES})
-    p_lim, z_lim = s.loc['in_ztf brighter than the PS1 limit', 'g_ps1_rec90_limit'], s.loc['in_pstarr brighter than the ZTF limit', 'g_ztf_rec90_limit']
+    p_lim, z_lim = s.loc['in_ztf brighter than the PS1 limit', 'g_ps1_rec75_limit'], s.loc['in_pstarr brighter than the ZTF limit', 'g_ztf_rec75_limit']
     assert out.g_sigma.round(1).tolist() == [round((20.0 - p_lim) / 0.1, 1), 0.0, round((z_lim - 20.0) / 0.1, 1), 0.0, -5.0]
 
 

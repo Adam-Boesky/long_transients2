@@ -2,8 +2,9 @@
 
 For every quality check (ZTF and PS1 sides), confident check and population check, the filter is rerun with only that
 check forced to pass everywhere (its other uses, e.g. in the recovery-limit references, included); the objects that
-become candidates are exactly what that check removes and nothing else would (unique), knock-on effects through the
-catalog sorting included. Its non-unique removals are the objects that would be in the catalog with the check passing,
+become candidates and fail the check are what it removes and nothing else would (unique), knock-on effects through
+the catalog sorting included (an object that becomes a candidate without failing the check was moved over the sigma
+threshold by the envelope sample changing, and is not counted). Its non-unique removals are the objects that would be in the catalog with the check passing,
 fail it (in a compared band, for quality checks), and are removed by some other check too. The |sigma| checks are the selection itself and are not looped over. Optionally the |sigma| checks
 use 90% recovery limits (`common.M90`).
 
@@ -26,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 warnings.filterwarnings('ignore')
 import matplotlib
 matplotlib.use('Agg')
+from typing import Optional
 import numpy as np
 import pandas as pd
 
@@ -158,12 +160,13 @@ class Failures:
         sigma = ff.interesting_checks(src) if all(f'{b}_sigma' in src for b in B3) else []
         self.objects = {k: dict(ff.real_checks(src, k, cuts) + ff.population_checks(src) + sigma) for k in ff.CATALOG}
 
-    def caption(self, i: int, label: str, group: str) -> str:
+    def caption(self, i: int, label: str, group: str, band: Optional[str] = None) -> str:
         k = int(self.src.catalog.values[i])
         cat = {b: self.src[f'{b}_cat'].values[i] >= 0 for b in B3}
         if group == 'quality':
-            this = '  '.join(f'{b} {check_value(self.src, label, b, i)}' for b in B3
-                             if label in self.quality[b] and not self.quality[b][label][i] and cat[b]) or 'passes in compared bands'
+            bad = [b for b in B3 if label in self.quality[b] and not self.quality[b][label][i]]
+            shown = band if band in bad else (bad[0] if bad else None)
+            this = (f'{shown} {check_value(self.src, label, shown, i)}' + (f'  (also {", ".join(b for b in bad if b != shown)})' if len(bad) > 1 else '')) if bad else 'passes'
         else:
             this = check_value(self.src, label, 'r', i)
         others = []
@@ -209,8 +212,9 @@ def main():
         fails_of = Failures(src_off, cuts)
         row = {'group': group, 'check': label}
         for k, name in ff.CATALOG.items():
-            unique = np.setdiff1d(without[name], nominal[name])
             fails, band_of = failing(src_off, group, label, k, cuts)
+            unique = np.setdiff1d(without[name], nominal[name])
+            unique = unique[fails[unique]]                 # candidates only with the check off AND failing it: not the objects an envelope shift moved over 3 sigma
             others = np.setdiff1d(np.flatnonzero(fails & (would_be_catalog(src_off) == k)), without[name])
             row[name], row[f'{name} (with others)'] = len(unique), len(others)
             for tag, rr in (('unique', unique), ('others', others)):
@@ -218,7 +222,7 @@ def main():
                 t[[c for c in KEY_COLS if c in t]].to_csv(os.path.join(d, f'{tag}_{name}.csv'))
             stamp_figure(stamps, src_off, unique, os.path.join(d, f'stamps_{name}.png'), f'{name}: removed by\n{label}',
                          n=a.n, band_of=band_of, starred=unique, others=others,
-                         captions=lambda i, label=label, group=group: fails_of.caption(i, label, group))
+                         captions=lambda i, b=None, label=label, group=group: fails_of.caption(i, label, group, b))
         summary.append(row)
         print(row, flush=True)
         pd.DataFrame(summary).to_csv(os.path.join(out, 'summary.csv'), index=False)

@@ -42,9 +42,10 @@ unmatched PS1 object), and every band of it is judged in the same order, each st
   4. confident (`real_checks`, object-wide): optionally a ZTF sharpness (`ztf_sharpness`) within
      `sharp_max` for point sources; for in_ztf and in_pstarr, optionally no other object of either survey within
      `isolation_arcsec` (`nearest_other_arcsec`, from the builder) nor inside a brighter object's Kron aperture (`neighbour_kron`): a
-     one-sided object that close to another is most often a piece of the same light; for in_both and in_pstarr, PS1's
-     own verdict on its detections: nStackDetections >= PS1_MIN_STACK_DETECTIONS and neither BAD_STACK nor
-     SUSPECT_STACK (for in_ztf the PS1 side is a limit and these only say the object is faint there); for the one-sided
+     one-sided object that close to another is most often a piece of the same light; for in_pstarr, PS1's own detection
+     pass found the object in >= PS1_MIN_STACK_DETECTIONS stacks (nothing else vouches for it); for in_both and in_pstarr,
+     neither BAD_STACK nor SUSPECT_STACK (for in_ztf the PS1 side is a limit and these only say the object is faint
+     there); for the one-sided
      catalogs, optionally that the detecting survey's light is not diffuse (`diffuse_light`, ZTF's side for in_ztf,
      PS1's for in_pstarr): PSF - Kron exceeding `diffuse_excess` by `diffuse_nsigma` in >= 2 measured bands is a
      sheet of scattered light, not an object (a source the other survey cannot see at all is not a galaxy; in_both's
@@ -126,8 +127,8 @@ SPIKE_WIDTH_ARCSEC = 12.0       # full width of a spike box
 SPIKE_GROWTH, SPIKE_ANCHOR_G = 1.15, 16.0   # spike half-length = R * SPIKE_GROWTH ** (SPIKE_ANCHOR_G - G): R at G = 16, ~4 R at G = 6
 ENVELOPE_MAG_GRID = np.arange(16, 24, 0.25)   # the envelope rows (mean magnitude); each row's window is +-ENVELOPE_HALF_WINDOW
 ENVELOPE_HALF_WINDOW = 0.5      # mag: a row's sample is every object within this of its magnitude (a top-hat window)
-LIMIT_COMPLETENESS = 0.9        # a survey's limit is where its recovery of the other survey's detections drops to this
-REC_LIMIT_COL = f'rec{round(100 * LIMIT_COMPLETENESS)}_limit'   # the limit columns' suffix, `limit_col`: {b}_ztf_rec90_limit
+LIMIT_COMPLETENESS = 0.75       # a survey's limit is the magnitude at which it recovers this fraction of point sources (75%: on field 860 PS1 sources there are still visible in binned stamps and ZTF sees 78% of them)
+REC_LIMIT_COL = f'rec{round(100 * LIMIT_COMPLETENESS)}_limit'   # the limit columns' suffix, `limit_col`: {b}_ztf_rec75_limit
 ENVELOPE_MONOTONE_FROM = 20.0   # fainter than this, no envelope edge comes in from where a brighter row had it
 ENVELOPE_MIN_PER_ROW = 50       # an envelope row with fewer objects is not measured: it takes the nearest measured row
 ERR_FLOOR_MAG = 0.01            # calibration floor per survey (PS1 ubercal, zubercal: ~1%), added in quadrature
@@ -222,7 +223,7 @@ def floor_snr(snr: np.ndarray) -> np.ndarray:
 
 
 def limit_col(survey: str, b: str) -> str:
-    """The column holding a survey's LIMIT_COMPLETENESS recovery limit in band b: `{b}_{survey}_rec90_limit` at 0.9."""
+    """The column holding a survey's LIMIT_COMPLETENESS recovery limit in band b: `{b}_{survey}_rec75_limit` at 0.75."""
     return f'{b}_{survey}_{REC_LIMIT_COL}'
 
 
@@ -450,7 +451,7 @@ def object_catalog(cats: Dict[str, np.ndarray], n_measured: np.ndarray) -> Tuple
 
 
 def completeness_limits(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
-    """`{b}_ztf_rec90_limit` and `{b}_ps1_rec90_limit` (`limit_col`; the 90 follows LIMIT_COMPLETENESS): each survey's
+    """`{b}_ztf_rec75_limit` and `{b}_ps1_rec75_limit` (`limit_col`; the 75 follows LIMIT_COMPLETENESS): each survey's
     magnitude of LIMIT_COMPLETENESS recovery in the band, at each object. ZTF's is `ztf_recovery_mag` of the image
     the band is judged in (`{b}_ztf_mag_5sigma`, `{b}_ztf_gpctsig`,
     `{b}_ztf_medpunc`: the detection's own image, else the covering one). PS1's is `ps1_stack.stack_recovery_mag` of
@@ -465,7 +466,7 @@ def completeness_limits(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
 
 
 def ps1_limit(src: pd.DataFrame, b: str) -> np.ndarray:
-    """PS1's LIMIT_COMPLETENESS recovery magnitude in band b at each object: `{b}_ps1_rec90_limit` once
+    """PS1's LIMIT_COMPLETENESS recovery magnitude in band b at each object: `{b}_ps1_rec75_limit` once
     `completeness_limits` has run, else read off the stack now (`ps1_stack.stack_recovery_mag`)."""
     if limit_col('ps1', b) in src:
         return src[limit_col('ps1', b)].values
@@ -507,7 +508,7 @@ def assign_catalogs(src: pd.DataFrame, cuts: Cuts = Cuts()) -> pd.DataFrame:
     two-sided bands (`{b}_cat` 0); its one-sided bands are dropped (-1), as is every band of an object that is not
     comparable. On the undetected side of a one-sided band, either survey uses its own sub-threshold measurement
     where it has one brighter than its limit (`{b}_ps1_use_forced`, `{b}_ztf_use_meas` True; PS1's forced photometry,
-    a ZTF detection under SNR_MIN), else the limit (`{b}_ps1_rec90_limit`, `{b}_ztf_rec90_limit`). A measurement, however noisy, says more
+    a ZTF detection under SNR_MIN), else the limit (`{b}_ps1_rec75_limit`, `{b}_ztf_rec75_limit`). A measurement, however noisy, says more
     than a limit deeper than it.
 
     Extended objects (`point_source`) are judged on Kron photometry throughout, point sources on PSF; a side without
@@ -1071,11 +1072,12 @@ def sharpness_fails(src: pd.DataFrame, point: np.ndarray, cuts: Cuts = Cuts()) -
 
 
 def real_checks(src: pd.DataFrame, catalog: int, cuts: Cuts = Cuts()) -> List[Tuple[str, np.ndarray]]:
-    """Object-wide tests that a `catalog` object is real, (label, passes) in order. Where the PS1 side is a measurement
-    (in_both, in_pstarr) PS1's own verdict on its detections counts: nStackDetections >= PS1_MIN_STACK_DETECTIONS (our
-    S/N can call a forced measurement D where PS1's detection pass found nothing: a blend or an underestimated error)
-    and neither BAD_STACK nor SUSPECT_STACK (qualityFlag: at most one good measurement). For in_ztf the PS1 side is a
-    limit and all three only say the object is faint there. For the one-sided catalogs the detecting survey's light must
+    """Object-wide tests that a `catalog` object is real, (label, passes) in order. For in_pstarr, where nothing but
+    PS1 vouches for the object, PS1's own detection pass must have found it in at least PS1_MIN_STACK_DETECTIONS stacks
+    (our S/N can call a forced measurement D where that pass found nothing: a blend or an underestimated error); an
+    in_both object has a ZTF detection vouching for it, and on field 860 the check removed only real faint objects
+    there. Where the PS1 side is a measurement (in_both, in_pstarr), neither BAD_STACK nor SUSPECT_STACK (qualityFlag:
+    at most one good measurement). For in_ztf the PS1 side is a limit and these only say the object is faint there. For the one-sided catalogs the detecting survey's light must
     not be diffuse (`diffuse_light`): what one survey cannot see at all and the other sees only as an extended sheet is
     scattered light, not an object that appeared or vanished."""
     checks = []
@@ -1088,9 +1090,10 @@ def real_checks(src: pd.DataFrame, catalog: int, cuts: Cuts = Cuts()) -> List[Tu
     if sharp_max is not None:
         label = f'ZTF: S/N²-weighted |sharp| <= {sharp_max}' + (' (point sources)' if cuts.sharp_point_only else '')
         checks.append((label, ~sharpness_fails(src, src.point_source.values, cuts)))
-    if catalog in (0, 2):                                                  # PS1's own verdict on its detections of the object,
-        checks.append((f'PS1: nStackDetections >= {PS1_MIN_STACK_DETECTIONS}',   # wherever its side is a measurement
+    if catalog == 2:                                                       # PS1's own detection pass, where nothing else vouches for the object
+        checks.append((f'PS1: nStackDetections >= {PS1_MIN_STACK_DETECTIONS}',
                        src.ps1_nStackDetections.values >= PS1_MIN_STACK_DETECTIONS))
+    if catalog in (0, 2):                                                  # PS1's own verdict on its stack, wherever its side is a measurement
         checks.append(('PS1: not BAD_STACK', ~_bits(src.ps1_qualityFlag.values, BAD_STACK)))          # <= 1 good or suspect measurement
         checks.append(('PS1: not SUSPECT_STACK', ~_bits(src.ps1_qualityFlag.values, SUSPECT_STACK)))  # <= 1 good measurement
     if cuts.diffuse_excess is not None and catalog in (1, 2):               # a sheet of scattered light, not an object

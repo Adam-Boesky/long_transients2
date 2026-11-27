@@ -8,9 +8,9 @@ flowchart TD
     Q["<b>1 · Quality</b> — per band, per survey<br/>is the data here usable?<br/><i>usable, or X</i>"]
     D["<b>2 · Detection</b> — per band, per usable side<br/>what does the survey have?<br/><i>D measured at S/N ≥ 5 · L measured below · U nothing: its limit stands in</i>"]
     S["<b>3 · Comparison and sorting</b><br/>per band: (D, D) two-sided · (D, L/U) ZTF vs PS1 limit · (L/U, D) PS1 vs ZTF limit · an X or (L/U, L/U): nothing<br/>per object: ≥ 2 bands of one kind → <b>in_both</b> / <b>in_ztf</b> / <b>in_pstarr</b>, else not comparable (with the reason)"]
-    CONF["<b>4 · Confident</b> — is it one real object?<br/>sharpness (point sources)<br/>in_ztf, in_pstarr: no object within 3″<br/>in_both, in_pstarr: PS1 nStackDetections ≥ 2, not BAD_STACK, not SUSPECT_STACK<br/>in_ztf, in_pstarr: the detecting survey's light not diffuse, (PSF − Kron − 0.5)/σ ≤ 3 in ≥ 2 bands"]
+    CONF["<b>4 · Confident</b> — is it one real object?<br/>sharpness (point sources)<br/>in_ztf, in_pstarr: no object within 3″<br/>in_pstarr: PS1 nStackDetections ≥ 2<br/>in_both, in_pstarr: not BAD_STACK, not SUSPECT_STACK<br/>in_ztf, in_pstarr: the detecting survey's light not diffuse, (PSF − Kron − 0.5)/σ ≤ 3 in ≥ 2 bands"]
     POP["<b>5 · Population</b> — not Galactic<br/>no Gaia proper motion or parallax at 5σ"]
-    CAL["<b>6 · Calibrate</b> on what is left<br/>each survey's 90 % point-source recovery limit per band (ZTF from the reference image's depth and noise ratio, PS1 from its injection-recovery test of the stack) · the Δmag envelope from the two-sided bands, one per morphology (PSF Δmag for point sources, Kron Δmag for extended objects)"]
+    CAL["<b>6 · Calibrate</b> on what is left<br/>each survey's 75 % point-source recovery limit per band (ZTF from the reference image's depth and noise ratio, PS1 from its injection-recovery test of the stack) · the Δmag envelope from the two-sided bands, one per morphology (PSF Δmag for point sources, Kron Δmag for extended objects)"]
     INT["<b>7 · Interesting</b><br/>σ from the envelope: either sign for in_both, ZTF brighter only for in_ztf, PS1 brighter only for in_pstarr<br/>|σ| > 3 in ≥ 2 bands, ≥ 2 of them the same sign"]
     OUT["<b>candidates</b>: in_both · in_ztf · in_pstarr"]
     IN --> Q --> D --> S --> CONF --> POP --> CAL --> INT --> OUT
@@ -33,7 +33,7 @@ The quality checks (step 1), each answering "is the data at this position sound?
 | the reference image covers the position | |
 | | the DR2 catalog covers the position: not in one of MAST's missing-data boxes, Dec > −30 (without a PS1 object) |
 | | PS1 measured some object in the band within 1′ (without a PS1 object: its stack reaches the position) |
-| | the band's deep stack recovers 90 % of injected sources at some magnitude (without a PS1 detection in the band; no stack, or one that never reaches 90 %: partly exposed on the survey edge or crowded in the Galactic plane) |
+| | the band's deep stack recovers 75 % of injected sources at some magnitude (without a PS1 detection in the band; no stack, or one that never reaches 90 %: partly exposed on the survey edge or crowded in the Galactic plane) |
 | DAOPhot flags = 0 | stack nFrames ≥ 4 |
 | DAOPhot chi ≤ 6 (detections, point or extended: the PSF fit did not fail) | |
 | > 5 px from a masked pixel (at the detection, or at the PS1 position for a limit) | residual sky ≤ 1e-7 |

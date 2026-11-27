@@ -110,6 +110,8 @@ class Stamps:
         self.cache = os.path.join(self.data_dir, 'fields', f'{self.field:06d}', 'review', 'ps1_stamps')
         os.makedirs(self.cache, exist_ok=True)
         self._refs: Dict = OrderedDict()
+        self.ps1_bin_px = 1                         # PS1 stamps are binned by this factor for display (4: ZTF-like 1" pixels): a faint source's
+                                                    # peak pixel is ~1 sigma at 0.25"/px, and binning sums its pixels the way the catalog does
         self.objs = {'ZTF': (src.ra.values[src.ztf_idx.values >= 0], src.dec.values[src.ztf_idx.values >= 0]),
                      'PS1': (src.ps1_ra.values[src.ps1_idx.values >= 0], src.ps1_dec.values[src.ps1_idx.values >= 0])}
         self.trees = {k: cKDTree(sky_xyz(*v)) for k, v in self.objs.items()}
@@ -125,6 +127,27 @@ class Stamps:
                 self._refs.popitem(last=False)
             self._refs[key] = load_refimg(refimg_path(os.path.join(self.data_dir, 'ztf_data'), self.field, *key))
         return self._refs[key]
+
+    def quadrant_of(self, ra: float, dec: float, b: str):
+        """(ccd, qid) of the field's band-b reference image the position lies deepest inside; (-1, -1) if none."""
+        import glob
+        from astropy.io import fits
+        from astropy.wcs import WCS
+        if not hasattr(self, '_quad_wcs'):
+            self._quad_wcs = {}
+            for path in sorted(glob.glob(os.path.join(self.data_dir, 'ztf_data', f'field{self.field:06d}', '*_refimg.fits'))):
+                parts = os.path.basename(path).split('_')                         # ztf_<field>_<zb>_c<cc>_q<q>_refimg.fits
+                band, ccd, qid = parts[2][1], int(parts[3][1:]), int(parts[4][1:])
+                self._quad_wcs[(band, ccd, qid)] = WCS(fits.getheader(path))
+        best, where = -np.inf, (-1, -1)
+        for (band, ccd, qid), w in self._quad_wcs.items():
+            if band != b:
+                continue
+            x, y = w.world_to_pixel_values(ra, dec); ny, nx = w.array_shape
+            depth = min(x, y, nx - 1 - x, ny - 1 - y)
+            if depth > best:
+                best, where = depth, (ccd, qid)
+        return where if best >= 0 else (-1, -1)
 
     def _ps1(self, r, b, files, size):
         path = os.path.join(self.cache, f'{r.ra:.6f}_{r.dec:+.6f}_{b}_{size}.fits')
@@ -150,9 +173,14 @@ class Stamps:
             return
         flip = wcs.pixel_scale_matrix[0, 0] > 0
         data = data[::-1, ::-1] if flip else data
+        scale = 1
+        if survey == 'PS1' and self.ps1_bin_px > 1:
+            k = self.ps1_bin_px; ny, nx = (data.shape[0] // k) * k, (data.shape[1] // k) * k
+            data = np.nansum(data[:ny, :nx].reshape(ny // k, k, nx // k, k), axis=(1, 3)); scale = k
 
         def pix(ra, dec):
             x, y = wcs.world_to_pixel_values(np.asarray(ra), np.asarray(dec))
+            x, y = (x + 0.5) / scale - 0.5, (y + 0.5) / scale - 0.5                       # into the binned grid
             return (data.shape[1] - 1 - x, data.shape[0] - 1 - y) if flip else (x, y)
 
         ax.imshow(data, origin='lower', cmap='viridis', norm=simple_norm(data, DEFAULT_STRETCH, percent=DEFAULT_PERCENT))
@@ -175,7 +203,10 @@ class Stamps:
         """The ZTF reference cutout in `ax_z` and the PS1 stack cutout in `ax_p`, band b, `size` arcsec; `star` puts a
         red ★ in the ZTF panel."""
         try:
-            im = self._ref(int(r[f'{b}_ccd']), int(r[f'{b}_qid']), b)
+            ccd, qid = int(r[f'{b}_ccd']), int(r[f'{b}_qid'])
+            if ccd < 0:                                   # no image has the position on a valid pixel (a saturated core): the one holding it
+                ccd, qid = self.quadrant_of(r.ra, r.dec, b)
+            im = self._ref(ccd, qid, b)
             cut = Cutout2D(im.data, SkyCoord(r.ra * u.deg, r.dec * u.deg), size * u.arcsec, wcs=im.wcs, mode='partial')
             self._draw(ax_z, cut.data, cut.wcs, r, b, 'ZTF', size, star)
         except (NoOverlapError, FileNotFoundError, ValueError):
@@ -223,7 +254,10 @@ def stamp_figure(stamps: 'Stamps', src: pd.DataFrame, rows: np.ndarray, path: st
         ax_z, ax_p = axes[row, 2 * col], axes[row, 2 * col + 1]
         stamps.pair(ax_z, ax_p, r, b, files, star=int(i) in starred)
         if captions is not None:
-            ax_z.set_xlabel(captions(int(i)), fontsize=9)
+            try:
+                ax_z.set_xlabel(captions(int(i), b), fontsize=9)
+            except TypeError:                            # a caption that takes the row only
+                ax_z.set_xlabel(captions(int(i)), fontsize=9)
         else:
             per_band = '  '.join(f"{x} χ{r[f'{x}_ztf_chi']:.1f} σ{r[f'{x}_sigma']:+.1f}" for x in B3 if r[f'{x}_cat'] >= 0)
             ax_z.set_xlabel(f'{per_band}\nnearest other {r.nearest_other_arcsec:.1f}″  ' + ('point' if r.point_source else 'extended')

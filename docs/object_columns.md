@@ -160,8 +160,8 @@ Every `merged` column (errors and S/N with a 0.01 mag floor, `floor_err`), plus:
 | `bright_star_d_over_R` | to the nearest G < 16 star, in its mask radii (`annotate_bright_stars`) |
 | `in_star_spike` | in one of its four spike boxes |
 | `inside_brighter_kron` | inside a brighter ZTF or PS1 object's Kron aperture (`annotate_neighbours`) |
-| `{b}_ztf_rec90_limit` | ZTF's 90% point-source recovery limit of the image the band is judged in, from `{b}_ztf_mag_5sigma` and `{b}_ztf_gpctsig` / `{b}_ztf_medpunc` (`ztf_recovery_mag`, `completeness_limits`; the 90 follows `LIMIT_COMPLETENESS`, `limit_col`) |
-| `{b}_ps1_rec90_limit` | PS1's, from the stack's injection test; NaN where the band has no stack or it never reaches 90 % (the band is uncovered, `ps1_checks`) |
+| `{b}_ztf_rec75_limit` | ZTF's 75% point-source recovery limit of the image the band is judged in, from `{b}_ztf_mag_5sigma` and `{b}_ztf_gpctsig` / `{b}_ztf_medpunc` (`ztf_recovery_mag`, `completeness_limits`; the 90 follows `LIMIT_COMPLETENESS`, `limit_col`) |
+| `{b}_ps1_rec75_limit` | PS1's, from the stack's injection test; NaN where the band has no stack or it never reaches 75 % (the band is uncovered, `ps1_checks`) |
 | `{b}_ztf_status`, `{b}_ps1_status` | D (S/N ≥ 5), L (below), U (nothing measured), X (fails quality) (`assign_catalogs`) |
 | `{b}_cat` | 0 ZTF vs PS1, 1 ZTF vs PS1 limit, 2 PS1 vs ZTF limit, −1 none |
 | `catalog` | 0 in_both, 1 in_ztf, 2 in_pstarr, −1 not comparable |
